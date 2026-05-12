@@ -111,7 +111,7 @@ test_data/整理后标注目录/肾脏/
   "bootstrap_organ": "肾脏",
   "conf_threshold": 0.7,
   "iou_threshold": 0.5,
-  "hard_sample_mode": "all_pred",
+  "hard_sample_mode": "strict",
   "reset_outputs_on_start": true
 }
 ```
@@ -122,7 +122,7 @@ test_data/整理后标注目录/肾脏/
 - `prepared_data_root`：系统整理后的缓存目录，当前默认 `test_data`。
 - `run_id`：当前审核轮次。
 - `reset_outputs_on_start`：为 `true` 时，启动后会自动用默认数据重新生成任务并清空当前轮次输出。
-- `hard_sample_mode=all_pred`：测试页面一用的放宽模式；正式使用可改为 `strict`。
+- `hard_sample_mode=strict`：页面一按 GT 与预测的完整匹配结果筛选困难样本；当前 strict 逻辑不按预测置信度过滤页面一候选框。
 
 当前仓库默认是测试配置：
 
@@ -139,7 +139,7 @@ test_data/整理后标注目录/肾脏/
 当前真实数据默认生成：
 
 ```text
-页面一任务：22 条
+页面一任务：1 条
 页面二任务：113 条
 ```
 
@@ -225,7 +225,7 @@ python scripts/adapt_production_test_data.py --source-json-dir Test --source-roo
 手动生成任务：
 
 ```bash
-python scripts/generate_tasks.py --run-id test_run_001 --organ 肾脏 --data-root test_data --conf-threshold 0.7 --iou-threshold 0.5 --hard-sample-mode all_pred
+python scripts/generate_tasks.py --run-id test_run_001 --organ 肾脏 --data-root test_data --conf-threshold 0.7 --iou-threshold 0.5 --hard-sample-mode strict
 ```
 
 手动导出审核结果：

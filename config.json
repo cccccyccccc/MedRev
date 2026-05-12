@@ -7,6 +7,6 @@
   "prepared_data_root": "test_data",
   "conf_threshold": 0.7,
   "iou_threshold": 0.5,
-  "hard_sample_mode": "all_pred",
+  "hard_sample_mode": "strict",
   "auto_export": true
 }

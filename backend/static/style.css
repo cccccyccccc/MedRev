@@ -309,6 +309,10 @@ a {
     min-height: 280px;
 }
 
+.carousel-frame {
+    min-height: 360px;
+}
+
 .image-frame img {
     width: 100%;
     height: 100%;
@@ -416,13 +420,59 @@ a {
     font-weight: 600;
 }
 
-.gallery-grid {
-    display: grid;
-    grid-template-columns: repeat(auto-fill, minmax(160px, 1fr));
+.carousel-controls {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 12px;
+}
+
+.carousel-btn {
+    width: 46px;
+    height: 46px;
+    border: 1px solid var(--line);
+    border-radius: 50%;
+    background: rgba(255, 255, 255, 0.9);
+    color: var(--primary-dark);
+    font-size: 28px;
+    line-height: 1;
+    cursor: pointer;
+    box-shadow: var(--shadow-soft);
+}
+
+.carousel-btn:disabled {
+    cursor: default;
+    opacity: 0.42;
+}
+
+.carousel-counter,
+.carousel-caption {
+    color: var(--muted);
+    font-size: 13px;
+    font-weight: 700;
+}
+
+.carousel-caption {
+    text-align: center;
+    word-break: break-all;
+}
+
+.gallery-window {
+    overflow-x: auto;
+    overflow-y: hidden;
+    padding: 4px 2px 12px;
+    scrollbar-gutter: stable;
+}
+
+.gallery-strip {
+    display: flex;
     gap: 14px;
+    min-height: 178px;
 }
 
 .thumb-card {
+    flex: 0 0 160px;
+    width: 160px;
     padding: 10px;
     border: 1px solid var(--line);
     border-radius: 18px;
@@ -430,13 +480,14 @@ a {
     box-shadow: var(--shadow-soft);
     cursor: pointer;
     display: grid;
+    grid-template-rows: 132px auto;
     gap: 8px;
     text-align: left;
 }
 
 .thumb-card img {
     width: 100%;
-    aspect-ratio: 1 / 1;
+    height: 132px;
     object-fit: contain;
     border-radius: 12px;
     background: #fff;
@@ -644,7 +695,21 @@ a {
         min-height: 250px;
     }
 
-    .gallery-grid {
-        grid-template-columns: repeat(auto-fill, minmax(130px, 1fr));
+    .carousel-frame {
+        min-height: 280px;
+    }
+
+    .gallery-strip {
+        min-height: 152px;
+    }
+
+    .thumb-card {
+        flex-basis: 132px;
+        width: 132px;
+        grid-template-rows: 104px auto;
+    }
+
+    .thumb-card img {
+        height: 104px;
     }
 }

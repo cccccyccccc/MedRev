@@ -18,6 +18,9 @@ from typing import Any, Dict, Iterable, List
 
 SEQUENCE_IMAGE_RE = re.compile(r".+_p\d+_\d+_\d+\.jpe?g$", re.IGNORECASE)
 JSON_NAMES = ("GT.json", "pred.json", "organ.json")
+REPORT_KEYWORDS_BY_ORGAN = {
+    "肾脏": ("泌尿", "肾", "尿"),
+}
 
 
 def load_json(path: Path) -> Dict[str, Any]:
@@ -62,6 +65,13 @@ def iter_case_dirs(source_root: Path) -> Iterable[Path]:
             yield path.parent
 
 
+def is_relevant_report_image(file_name: str, organ: str) -> bool:
+    keywords = REPORT_KEYWORDS_BY_ORGAN.get(organ)
+    if not keywords:
+        return True
+    return any(keyword in file_name for keyword in keywords)
+
+
 def infer_case_metadata(source_root: Path, organ: str) -> Dict[str, Any]:
     metadata: Dict[str, Any] = {
         "source_root": source_root.resolve().as_posix(),
@@ -78,6 +88,7 @@ def infer_case_metadata(source_root: Path, organ: str) -> Dict[str, Any]:
         case_id = case_dir.name
 
         jpgs = sorted(p for p in case_dir.iterdir() if p.is_file() and p.suffix.lower() in {".jpg", ".jpeg"})
+        report_candidates: List[str] = []
         report_images: List[str] = []
         sequence_images: List[str] = []
         for jpg in jpgs:
@@ -85,7 +96,9 @@ def infer_case_metadata(source_root: Path, organ: str) -> Dict[str, Any]:
             if SEQUENCE_IMAGE_RE.match(jpg.name):
                 sequence_images.append(rel)
             else:
-                report_images.append(rel)
+                report_candidates.append(rel)
+                if is_relevant_report_image(jpg.name, organ):
+                    report_images.append(rel)
 
         history = case_dir / "病史.txt"
         metadata["cases"][case_relpath] = {
@@ -97,6 +110,7 @@ def infer_case_metadata(source_root: Path, organ: str) -> Dict[str, Any]:
             "gender": gender,
             "organ": organ,
             "report_images": report_images,
+            "all_context_images": report_candidates,
             "sequence_images": sequence_images,
             "medical_history_path": history.resolve().as_posix() if history.exists() else "",
         }

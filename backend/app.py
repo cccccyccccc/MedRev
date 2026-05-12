@@ -710,6 +710,14 @@ def get_task_asset(task_id, kind):
     if kind == 'current':
         return send_local_image(task.get('image_path'))
     if kind == 'report':
+        index = int(request.args.get('index', '0'))
+        report_images = task.get('report_image_paths') or []
+        if report_images:
+            if index < 0 or index >= len(report_images):
+                abort(404)
+            return send_local_image(report_images[index])
+        if index > 0:
+            abort(404)
         return send_local_image(task.get('report_image_path'))
     if kind == 'related':
         index = int(request.args.get('index', '0'))
@@ -815,6 +823,11 @@ def render_task_image():
     if bio is None:
         return jsonify({'error': 'image not found'}), 404
     return send_file(bio, mimetype='image/jpeg')
+
+
+@app.route('/')
+def index():
+    return redirect(url_for('login'))
 
 
 @app.route('/doctor')

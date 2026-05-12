@@ -1,0 +1,59 @@
+{
+  "summary": {
+    "pred_json": "Test/pred.json",
+    "gt_json": "Test/GT.json",
+    "output_json": "Test/pred_error_cases.json",
+    "image_key": "image_relpath",
+    "iou_threshold": 0.5,
+    "gt_image_count": 25,
+    "pred_image_count": 1469,
+    "evaluated_gt_images": 25,
+    "error_image_count": 1,
+    "error_instance_count": 1,
+    "error_type_counts": {
+      "missed_detection": 1
+    }
+  },
+  "error_images": [
+    {
+      "image_key": "肾脏恶性肿瘤/肾脏_p0059/肾脏_p0059_017_151636.jpg",
+      "file_name": "肾脏_p0059_017_151636.jpg",
+      "image_relpath": "肾脏恶性肿瘤/肾脏_p0059/肾脏_p0059_017_151636.jpg",
+      "image_abspath": "/opt/public/jiangwentao/ultrasound/datasets/us_raw/肾脏_交付（不带映射表）/肾脏_交付（不带映射表）/肾脏恶性肿瘤/肾脏_p0059/肾脏_p0059_017_151636.jpg",
+      "case_relpath": "肾脏恶性肿瘤/肾脏_p0059",
+      "width": 768,
+      "height": 576,
+      "gt_image_id": 4756,
+      "pred_image_id": 45277,
+      "gt_count": 1,
+      "pred_count": 0,
+      "error_types": [
+        "missed_detection"
+      ],
+      "errors": [
+        {
+          "type": "missed_detection",
+          "gt_index": 0,
+          "gt": {
+            "ann_id": 3492,
+            "category_id": 5,
+            "category_name": "shen zang e xing zhong liu",
+            "bbox_xywh": [
+              356.55263157894734,
+              242.02631578947367,
+              101.30409356725147,
+              111.03508771929822
+            ],
+            "bbox_xyxy": [
+              356.55263157894734,
+              242.02631578947367,
+              457.8567251461988,
+              353.0614035087719
+            ]
+          },
+          "best_iou_with_any_pred": 0.0
+        }
+      ]
+    }
+  ]
+}

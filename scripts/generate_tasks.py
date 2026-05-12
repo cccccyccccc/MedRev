@@ -21,6 +21,94 @@ def iou(boxA, boxB):
     return interArea / denom
 
 
+def evaluate_gt_prediction(gt_annos, preds, iou_thresh: float):
+    """Return whether pred fully matches GT plus mismatch reasons for page 1.
+
+    A GT image is considered correct only when predictions and GT annotations
+    can be matched one-to-one with the same category and IoU greater than or
+    equal to the configured threshold. Unmatched GT means missed detection;
+    unmatched prediction means false positive. This intentionally does not
+    filter predictions by confidence, matching the reviewer-provided script.
+    """
+    qualified_preds = list(preds)
+
+    candidate_pairs = []
+    for gt_index, gt in enumerate(gt_annos):
+        for pred_index, pred in enumerate(qualified_preds):
+            pair_iou = iou(gt.get('bbox', [0, 0, 0, 0]), pred.get('bbox', [0, 0, 0, 0]))
+            if gt.get('category') == pred.get('category') and pair_iou >= iou_thresh:
+                candidate_pairs.append((pair_iou, gt_index, pred_index))
+
+    matched_gt = set()
+    matched_pred = set()
+    for _, gt_index, pred_index in sorted(candidate_pairs, reverse=True):
+        if gt_index in matched_gt or pred_index in matched_pred:
+            continue
+        matched_gt.add(gt_index)
+        matched_pred.add(pred_index)
+
+    reasons = []
+    for gt_index, gt in enumerate(gt_annos):
+        if gt_index in matched_gt:
+            continue
+        best_pred = None
+        best_iou = 0.0
+        for pred_index, pred in enumerate(qualified_preds):
+            if pred_index in matched_pred:
+                continue
+            pair_iou = iou(gt.get('bbox', [0, 0, 0, 0]), pred.get('bbox', [0, 0, 0, 0]))
+            if pair_iou > best_iou:
+                best_iou = pair_iou
+                best_pred = pred
+        if best_pred and best_iou >= iou_thresh and best_pred.get('category') != gt.get('category'):
+            reasons.append({
+                'type': 'category_error',
+                'gt_category': gt.get('category'),
+                'pred_category': best_pred.get('category'),
+                'iou': best_iou,
+            })
+        elif best_pred and best_pred.get('category') == gt.get('category') and best_iou < iou_thresh:
+            reasons.append({
+                'type': 'box_iou_error',
+                'gt_category': gt.get('category'),
+                'pred_category': best_pred.get('category'),
+                'iou': best_iou,
+            })
+        else:
+            reasons.append({
+                'type': 'false_negative',
+                'gt_category': gt.get('category'),
+                'iou': best_iou,
+            })
+
+    for pred_index, pred in enumerate(qualified_preds):
+        if pred_index in matched_pred:
+            continue
+        best_gt = None
+        best_iou = 0.0
+        for gt in gt_annos:
+            pair_iou = iou(gt.get('bbox', [0, 0, 0, 0]), pred.get('bbox', [0, 0, 0, 0]))
+            if pair_iou > best_iou:
+                best_iou = pair_iou
+                best_gt = gt
+        if best_gt and best_iou >= iou_thresh and best_gt.get('category') != pred.get('category'):
+            reasons.append({
+                'type': 'category_error',
+                'gt_category': best_gt.get('category'),
+                'pred_category': pred.get('category'),
+                'iou': best_iou,
+            })
+        else:
+            reasons.append({
+                'type': 'false_positive',
+                'pred_category': pred.get('category'),
+                'confidence': pred.get('confidence', 0.0),
+                'iou': best_iou,
+            })
+
+    return len(reasons) == 0, reasons, qualified_preds
+
+
 def load_json(path: Path):
     if not path.exists():
         return {} if path.suffix.lower() == ".json" else []
@@ -105,7 +193,7 @@ def localize_relpath(data_root: Path, image_relpath: str, fallback_abspath: str 
     return find_image_path(data_root, Path(image_relpath).name, image_relpath, fallback_abspath)
 
 
-def related_images_for(image_path: str, current_name: str, data_root: Path, image: Dict[str, Any], case_metadata: Dict[str, Any]) -> Tuple[str, List[str]]:
+def related_images_for(image_path: str, current_name: str, data_root: Path, image: Dict[str, Any], case_metadata: Dict[str, Any]) -> Tuple[str, List[str], List[str]]:
     info = case_info_for(image, case_metadata)
     source_root = infer_source_root(image_path, image.get("image_relpath", ""))
     report_paths = [
@@ -115,7 +203,7 @@ def related_images_for(image_path: str, current_name: str, data_root: Path, imag
     report_paths = [p for p in report_paths if p]
 
     related = []
-    for rel in info.get("report_images", []) + info.get("sequence_images", []):
+    for rel in info.get("sequence_images", []):
         path = localize_relpath(data_root, rel, source_root=source_root)
         if path and Path(path).name != current_name:
             related.append(path)
@@ -132,7 +220,8 @@ def related_images_for(image_path: str, current_name: str, data_root: Path, imag
         legacy_report = Path(image_path).parent / "病例报告.jpg"
         if legacy_report.exists():
             report_image = legacy_report.resolve().as_posix()
-    return report_image, related
+            report_paths = [report_image]
+    return report_image, report_paths, related
 
 
 def stable_task_suffix(task_type: str, image: Dict[str, Any], image_name: str) -> str:
@@ -290,33 +379,23 @@ def main():
         image_meta = gt_entry.get("image", {})
         case_info = case_info_for(image_meta, case_metadata)
         case_id = case_info.get("case_id") or (Path(image_path).parent.name if image_path else "")
-        report_image, related = related_images_for(image_path, image_name, test_data, image_meta, case_metadata)
+        report_image, report_images, related = related_images_for(image_path, image_name, test_data, image_meta, case_metadata)
 
         if not pred_entry:
-            # no prediction -> skip but could be marked as missing
-            continue
+            pred_entry = {
+                "image_name": image_name,
+                "predictions": [],
+                "model_version": None,
+            }
 
-        # for multi-box, greedy match: for each gt, find best pred
         gt_annos = gt_entry.get('annotations', [])
         preds = pred_entry.get('predictions', [])
-        inconsistent = False
-        best_pred_summary = None
-        # compute max pred confidence across preds
         max_conf = max((p.get('confidence', 0.0) for p in preds), default=0.0)
-        for g in gt_annos:
-            best_iou = 0.0
-            best_p = None
-            for p in preds:
-                i = iou(g.get('bbox', [0,0,0,0]), p.get('bbox', [0,0,0,0]))
-                if i > best_iou:
-                    best_iou = i
-                    best_p = p
-            if best_p and best_p.get('confidence', 0.0) >= conf_thresh:
-                # high confidence pred exists matched to gt
-                if best_p.get('category') != g.get('category') or best_iou < iou_thresh:
-                    inconsistent = True
-                    best_pred_summary = best_p
-                    break
+        is_fully_correct, hard_reasons, qualified_preds = evaluate_gt_prediction(
+            gt_annos,
+            preds,
+            iou_thresh,
+        )
 
         include_for_ui_test = (
             args.hard_sample_mode == 'all_pred'
@@ -324,7 +403,7 @@ def main():
             and max_conf >= conf_thresh
         )
 
-        if inconsistent or include_for_ui_test:
+        if (not is_fully_correct) or include_for_ui_test:
             model_version = pred_entry.get('model_version')
             task = {
                 "run_id": run_id,
@@ -337,10 +416,12 @@ def main():
                 "image_name": image_name,
                 "image_path": image_path,
                 "report_image_path": str((Path(image_path).parent / '病例报告.jpg').as_posix()) if image_path else "",
-                "report_image_paths": [report_image] if report_image else [],
+                "report_image_paths": report_images,
                 "related_images": related,
                 "gt_annotation": gt_annos,
                 "model_prediction": preds,
+                "hard_sample_reasons": hard_reasons,
+                "qualified_prediction_count": len(qualified_preds),
                 "model_version": model_version,
                 "model_confidence": max_conf,
                 "image_width": gt_entry.get("image_width", 0),
@@ -370,7 +451,7 @@ def main():
         image_path = pred_entry.get('image_path') or find_image_path(test_data, image_name, pred_entry.get("image_relpath", ""))
         case_info = case_info_for(image_meta, case_metadata)
         case_id = case_info.get("case_id") or (Path(image_path).parent.name if image_path else "")
-        report_image, related = related_images_for(image_path, image_name, test_data, image_meta, case_metadata)
+        report_image, report_images, related = related_images_for(image_path, image_name, test_data, image_meta, case_metadata)
 
         task = {
             "run_id": run_id,
@@ -383,7 +464,7 @@ def main():
             "image_name": image_name,
             "image_path": image_path,
             "report_image_path": report_image,
-            "report_image_paths": [report_image] if report_image else [],
+            "report_image_paths": report_images,
             "related_images": related,
             "pseudo_label_prediction": preds,
             "model_version": pred_entry.get('model_version'),

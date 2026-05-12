@@ -57,12 +57,17 @@
                     <div class="hero-grid">
                         <div class="media-block spotlight">
                             <div class="media-caption">病例报告图片</div>
-                            <div class="image-frame large-frame" data-click-preview>
+                            <div class="image-frame large-frame carousel-frame" data-click-preview>
                                 <img id="reportImg" alt="病例报告图片">
                                 <div class="image-fallback">
                                     <span>暂无病例报告图片</span>
                                     <button type="button" class="image-retry" data-retry-for="reportImg">重试</button>
                                 </div>
+                            </div>
+                            <div class="carousel-controls" id="reportControls" hidden>
+                                <button type="button" class="carousel-btn" id="reportPrev" aria-label="上一张报告图">‹</button>
+                                <span class="carousel-counter" id="reportCounter">0 / 0</span>
+                                <button type="button" class="carousel-btn" id="reportNext" aria-label="下一张报告图">›</button>
                             </div>
                         </div>
 
@@ -147,9 +152,11 @@
                             <div class="section-label">病例上下文</div>
                             <h3>同病例其他图片</h3>
                         </div>
-                        <div class="gallery-hint">点击缩略图可放大</div>
+                        <div class="gallery-hint">点击图片可放大</div>
                     </div>
-                    <div id="relatedGallery" class="gallery-grid"></div>
+                    <div class="gallery-window">
+                        <div id="relatedGallery" class="gallery-strip"></div>
+                    </div>
                     <div id="relatedEmpty" class="empty-state" hidden>暂无其他图片</div>
                 </section>
 
@@ -213,6 +220,10 @@
         const predTitle = document.getElementById('predTitle')
         const hardActions = document.getElementById('hardActions')
         const pseudoActions = document.getElementById('pseudoActions')
+        const reportControls = document.getElementById('reportControls')
+        const reportPrev = document.getElementById('reportPrev')
+        const reportNext = document.getElementById('reportNext')
+        const reportCounter = document.getElementById('reportCounter')
         const relatedGallery = document.getElementById('relatedGallery')
         const relatedEmpty = document.getElementById('relatedEmpty')
         const previewModal = document.getElementById('previewModal')
@@ -220,6 +231,8 @@
         const previewImage = document.getElementById('previewImage')
         const closePreview = document.getElementById('closePreview')
         let currentTask = null
+        let reportIndex = 0
+        let currentReportImages = []
         const previewState = {
             src: '',
             baseScale: 1,
@@ -273,6 +286,30 @@
             }
             img.dataset.source = src
             img.src = cacheBust(src)
+        }
+
+        function cycleIndex(current, length, delta) {
+            if (!length) return 0
+            return (current + delta + length) % length
+        }
+
+        function updateCarouselControls(controls, counter, prev, next, index, total) {
+            controls.hidden = total <= 1
+            counter.textContent = total ? `${index + 1} / ${total}` : '0 / 0'
+            prev.disabled = total <= 1
+            next.disabled = total <= 1
+        }
+
+        function renderReportImage() {
+            const total = currentReportImages.length
+            if (!currentTask || total === 0) {
+                setImageSource(reportImg, '')
+                updateCarouselControls(reportControls, reportCounter, reportPrev, reportNext, 0, 0)
+                return
+            }
+            reportIndex = Math.min(reportIndex, total - 1)
+            setImageSource(reportImg, assetUrl(currentTask.task_id, 'report', reportIndex))
+            updateCarouselControls(reportControls, reportCounter, reportPrev, reportNext, reportIndex, total)
         }
 
         function retryImageById(imgId) {
@@ -359,6 +396,14 @@
         bindPreview(gtImg.closest('.image-frame'), () => gtImg.src)
         bindPreview(predImg.closest('.image-frame'), () => predImg.src)
 
+        reportPrev.addEventListener('click', () => {
+            reportIndex = cycleIndex(reportIndex, currentReportImages.length, -1)
+            renderReportImage()
+        })
+        reportNext.addEventListener('click', () => {
+            reportIndex = cycleIndex(reportIndex, currentReportImages.length, 1)
+            renderReportImage()
+        })
         document.querySelectorAll('.image-retry').forEach((button) => {
             button.addEventListener('click', (event) => {
                 event.stopPropagation()
@@ -468,13 +513,16 @@
             hardActions.hidden = type !== 'hard'
             pseudoActions.hidden = type !== 'pseudo'
 
-            const hasReport = Boolean(currentTask.report_image_path)
             const hasCurrentImage = Boolean(currentTask.image_path)
             const hasGtInfo = type !== 'hard' || (currentTask.gt_annotation || []).length > 0
             const predList = type === 'hard' ? currentTask.model_prediction : currentTask.pseudo_label_prediction
             const hasPredInfo = (predList || []).length > 0
 
-            setImageSource(reportImg, hasReport ? assetUrl(currentTask.task_id, 'report') : '')
+            currentReportImages = currentTask.report_image_paths && currentTask.report_image_paths.length
+                ? currentTask.report_image_paths
+                : (currentTask.report_image_path ? [currentTask.report_image_path] : [])
+            reportIndex = 0
+            renderReportImage()
             setImageSource(currentImg, hasCurrentImage ? assetUrl(currentTask.task_id, 'current') : '')
             setImageSource(gtImg, hasGtInfo ? `/render?task_id=${encodeURIComponent(currentTask.task_id)}&show=gt` : '')
             setImageSource(predImg, hasPredInfo ? `/render?task_id=${encodeURIComponent(currentTask.task_id)}&show=pred` : '')
@@ -508,11 +556,12 @@
             relatedGallery.innerHTML = ''
             const currentPath = normalizePath(task.image_path)
             const reportPath = normalizePath(task.report_image_path)
-            const seen = new Set([currentPath, reportPath])
+            const reportPaths = (task.report_image_paths || []).map(normalizePath)
+            const seen = new Set([currentPath, reportPath, ...reportPaths])
             const related = (task.related_images || [])
                 .map((item, index) => ({ item, index }))
-                .filter(({ item }) => {
-                    const normalized = normalizePath(item)
+                .filter((item) => {
+                    const normalized = normalizePath(item.item)
                     if (!normalized || seen.has(normalized)) return false
                     seen.add(normalized)
                     return true
@@ -524,15 +573,15 @@
             }
 
             relatedEmpty.hidden = true
-            related.forEach(({ index }) => {
+            related.forEach(({ index }, displayIndex) => {
                 const item = document.createElement('button')
                 item.type = 'button'
                 item.className = 'thumb-card'
                 const img = document.createElement('img')
                 img.src = assetUrl(task.task_id, 'related', index)
-                img.alt = `同病例图片 ${index + 1}`
+                img.alt = `同病例图片 ${displayIndex + 1}`
                 const caption = document.createElement('span')
-                caption.textContent = `同病例图 ${index + 1}`
+                caption.textContent = `同病例图 ${displayIndex + 1}`
                 item.appendChild(img)
                 item.appendChild(caption)
                 item.addEventListener('click', () => {

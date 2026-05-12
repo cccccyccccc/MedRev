@@ -404,6 +404,34 @@
             background: rgba(255, 255, 255, 0.03);
         }
 
+        tbody tr.selectable-row {
+            cursor: pointer;
+        }
+
+        tbody tr.selectable-row.is-selected {
+            background: rgba(110, 231, 255, 0.10);
+            box-shadow: inset 4px 0 0 rgba(110, 231, 255, 0.82);
+        }
+
+        .select-cell {
+            width: 56px;
+            text-align: center;
+            vertical-align: middle;
+        }
+
+        .select-all-check,
+        .task-check {
+            width: 24px;
+            height: 24px;
+            margin: 0;
+            cursor: pointer;
+            accent-color: #6ee7ff;
+        }
+
+        .task-check {
+            transform: translateY(2px);
+        }
+
         .status {
             display: inline-flex;
             align-items: center;
@@ -827,7 +855,7 @@
                     <table>
                         <thead>
                             <tr>
-                                <th style="width:42px;"><input type="checkbox" id="selectAll"></th>
+                                <th style="width:56px;"><input type="checkbox" class="select-all-check" id="selectAll" aria-label="全选任务"></th>
                                 <th>任务</th>
                                 <th>病例 / 图片</th>
                                 <th>模型版本</th>
@@ -1014,8 +1042,8 @@
 
             el('taskTableBody').innerHTML = list.length
                 ? list.map((task) => `
-                    <tr>
-                        <td><input type="checkbox" class="task-check" value="${task.task_id}"></td>
+                    <tr class="selectable-row">
+                        <td class="select-cell"><input type="checkbox" class="task-check" value="${task.task_id}" aria-label="选择任务"></td>
                         <td>
                             <div><strong>${task.task_id}</strong></div>
                             <div class="list-item-meta">${taskKindLabel(type)} · ${task.organ || '—'}</div>
@@ -1031,6 +1059,38 @@
                     </tr>
                 `).join('')
                 : `<tr><td colspan="7" style="padding:24px 16px;color:var(--muted)">没有符合筛选条件的任务</td></tr>`
+            wireTaskRowSelection()
+        }
+
+        function wireTaskRowSelection() {
+            document.querySelectorAll('tr.selectable-row').forEach((row) => {
+                const checkbox = row.querySelector('.task-check')
+                if (!checkbox) return
+                const syncRow = () => row.classList.toggle('is-selected', checkbox.checked)
+                syncRow()
+                checkbox.addEventListener('click', (event) => {
+                    event.stopPropagation()
+                    syncRow()
+                    updateSelectAllState()
+                })
+                row.addEventListener('click', (event) => {
+                    const interactive = event.target.closest('a, button, input, select, label')
+                    if (interactive && interactive !== checkbox) return
+                    checkbox.checked = !checkbox.checked
+                    syncRow()
+                    updateSelectAllState()
+                })
+            })
+            updateSelectAllState()
+        }
+
+        function updateSelectAllState() {
+            const boxes = [...document.querySelectorAll('.task-check')]
+            const selectAll = el('selectAll')
+            if (!selectAll) return
+            const checkedCount = boxes.filter((box) => box.checked).length
+            selectAll.checked = boxes.length > 0 && checkedCount === boxes.length
+            selectAll.indeterminate = checkedCount > 0 && checkedCount < boxes.length
         }
 
         function selectedTaskIds() {
@@ -1110,13 +1170,16 @@
             el('selectAll').addEventListener('change', (event) => {
                 document.querySelectorAll('.task-check').forEach((checkbox) => {
                     checkbox.checked = event.target.checked
+                    checkbox.closest('tr')?.classList.toggle('is-selected', checkbox.checked)
                 })
+                updateSelectAllState()
             })
             el('clearSelectionBtn').addEventListener('click', () => {
                 document.querySelectorAll('.task-check').forEach((checkbox) => {
                     checkbox.checked = false
+                    checkbox.closest('tr')?.classList.remove('is-selected')
                 })
-                el('selectAll').checked = false
+                updateSelectAllState()
             })
         }
 
