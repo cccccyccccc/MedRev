@@ -44,6 +44,18 @@
                 <button id="loadBtn" class="btn primary">取下一条</button>
             </section>
 
+            <section class="card task-directory-card">
+                <div class="card-head">
+                    <div>
+                        <div class="section-label">任务目录</div>
+                        <h3>未完成任务</h3>
+                    </div>
+                    <button id="refreshDirectoryBtn" class="btn">刷新目录</button>
+                </div>
+                <div id="taskDirectory" class="task-directory"></div>
+                <div id="taskDirectoryEmpty" class="empty-state" hidden>当前类型没有未完成任务</div>
+            </section>
+
             <section id="taskArea" class="dashboard" hidden>
                 <section class="card hero-card">
                     <div class="hero-header">
@@ -161,6 +173,7 @@
                 </section>
 
                 <section class="card actions-card">
+                    <div id="reviewNotice" class="review-notice" hidden></div>
                     <div class="card-head">
                         <div>
                             <div class="section-label">医生操作</div>
@@ -193,6 +206,11 @@
         </main>
     </div>
 
+    <div id="toast" class="toast" role="status" aria-live="polite" hidden>
+        <span class="toast-icon" aria-hidden="true">✓</span>
+        <span id="toastText">提交成功！</span>
+    </div>
+
     <div id="previewModal" class="preview-modal" hidden>
         <button id="closePreview" class="preview-close" aria-label="关闭预览">×</button>
         <div id="previewStage" class="preview-stage">
@@ -220,19 +238,26 @@
         const predTitle = document.getElementById('predTitle')
         const hardActions = document.getElementById('hardActions')
         const pseudoActions = document.getElementById('pseudoActions')
+        const reviewNotice = document.getElementById('reviewNotice')
         const reportControls = document.getElementById('reportControls')
         const reportPrev = document.getElementById('reportPrev')
         const reportNext = document.getElementById('reportNext')
         const reportCounter = document.getElementById('reportCounter')
         const relatedGallery = document.getElementById('relatedGallery')
         const relatedEmpty = document.getElementById('relatedEmpty')
+        const refreshDirectoryBtn = document.getElementById('refreshDirectoryBtn')
+        const taskDirectory = document.getElementById('taskDirectory')
+        const taskDirectoryEmpty = document.getElementById('taskDirectoryEmpty')
         const previewModal = document.getElementById('previewModal')
         const previewStage = document.getElementById('previewStage')
         const previewImage = document.getElementById('previewImage')
         const closePreview = document.getElementById('closePreview')
+        const toast = document.getElementById('toast')
+        const toastText = document.getElementById('toastText')
         let currentTask = null
         let reportIndex = 0
         let currentReportImages = []
+        let toastTimer = null
         const previewState = {
             src: '',
             baseScale: 1,
@@ -251,16 +276,35 @@
         const reviewerId = ("{{ reviewer_id }}") || 'anonymous'
 
         loadBtn.addEventListener('click', async () => {
-            await loadNext(taskTypeSelect.value)
+            await loadNext(taskTypeSelect.value, true)
         })
 
         taskTypeSelect.addEventListener('change', async () => {
+            currentTask = null
+            await loadTaskDirectory(taskTypeSelect.value)
             await loadNext(taskTypeSelect.value)
+        })
+
+        refreshDirectoryBtn.addEventListener('click', async () => {
+            await loadTaskDirectory(taskTypeSelect.value)
         })
 
         function assetUrl(taskId, kind, index = null) {
             const query = index === null ? '' : `?index=${index}`
             return `/task/${encodeURIComponent(taskId)}/asset/${kind}${query}`
+        }
+
+        function showToast(message) {
+            toastText.textContent = message
+            toast.hidden = false
+            toast.classList.add('show')
+            window.clearTimeout(toastTimer)
+            toastTimer = window.setTimeout(() => {
+                toast.classList.remove('show')
+                window.setTimeout(() => {
+                    toast.hidden = true
+                }, 220)
+            }, 1800)
         }
 
         function bindPreview(frame, sourceGetter) {
@@ -479,19 +523,143 @@
             applyPreviewTransform()
         })
 
-        async function loadNext(type) {
+        function taskTypeLabel(type) {
+            return type === 'hard' ? '页面一' : '页面二'
+        }
+
+        function reviewResultLabel(result, errorType = '') {
+            const map = {
+                gt_correct: 'GT 正确',
+                gt_error: 'GT 有误',
+                pseudo_label_correct: '伪标签正确',
+                pseudo_label_error: `伪标签错误${errorType ? ` · ${errorType}` : ''}`,
+            }
+            return map[result] || result || '未知结果'
+        }
+
+        function displayTask(task, type) {
+            currentTask = task
+            taskArea.hidden = false
+            title.textContent = type === 'hard' ? '页面一 - GT 检查' : '页面二 - 伪标签检查'
+            taskChip.textContent = taskTypeLabel(type)
+            caseId.textContent = currentTask.case_id || '-'
+            imageName.textContent = currentTask.image_name || '-'
+            modelVersion.textContent = currentTask.model_version || '-'
+            modelConfidence.textContent = currentTask.model_confidence ?? '-'
+            taskIdText.textContent = currentTask.task_id || '-'
+            predTitle.textContent = type === 'hard' ? '模型预测展示图' : '模型伪标签展示图'
+            if (currentTask.last_review) {
+                reviewNotice.hidden = false
+                reviewNotice.textContent = `这个任务已审核过，上次结果：${reviewResultLabel(currentTask.last_review.review_result, currentTask.last_review.error_type)}。可以复查并重新提交，系统会以最后一次提交为准。`
+            } else {
+                reviewNotice.hidden = true
+                reviewNotice.textContent = ''
+            }
+
+            hardActions.hidden = type !== 'hard'
+            pseudoActions.hidden = type !== 'pseudo'
+
+            const hasCurrentImage = Boolean(currentTask.image_path)
+            const hasGtInfo = type !== 'hard' || (currentTask.gt_annotation || []).length > 0
+            const predKey = type === 'hard' ? 'model_prediction' : 'pseudo_label_prediction'
+            const hasPredInfo = Object.prototype.hasOwnProperty.call(currentTask, predKey)
+
+            currentReportImages = currentTask.report_image_paths && currentTask.report_image_paths.length
+                ? currentTask.report_image_paths
+                : (currentTask.report_image_path ? [currentTask.report_image_path] : [])
+            reportIndex = 0
+            renderReportImage()
+            setImageSource(currentImg, hasCurrentImage ? assetUrl(currentTask.task_id, 'current') : '')
+            setImageSource(gtImg, hasGtInfo ? `/render?task_id=${encodeURIComponent(currentTask.task_id)}&show=gt` : '')
+            setImageSource(predImg, hasCurrentImage && hasPredInfo ? `/render?task_id=${encodeURIComponent(currentTask.task_id)}&show=pred` : '')
+
+            renderRelatedImages(currentTask)
+            taskDirectory.querySelectorAll('.task-directory-item').forEach((button) => {
+                button.classList.toggle('active', button.dataset.taskId === currentTask.task_id)
+            })
+        }
+
+        function renderTaskDirectory(items) {
+            taskDirectory.innerHTML = ''
+            taskDirectoryEmpty.hidden = items.length > 0
+            items.forEach((item, index) => {
+                const button = document.createElement('button')
+                button.type = 'button'
+                button.className = 'task-directory-item'
+                if (currentTask && item.task_id === currentTask.task_id) {
+                    button.classList.add('active')
+                }
+                button.dataset.taskId = item.task_id
+                button.innerHTML = `
+                    <span class="task-directory-index">${index + 1}</span>
+                    <span class="task-directory-main">
+                        <strong>${item.case_id || '未知病例'}</strong>
+                        <small>${item.image_name || item.task_id}</small>
+                    </span>
+                    <span class="task-directory-meta${item.status === 'reviewed' ? ' reviewed' : ''}">${item.status === 'reviewed' ? '已审核' : (item.organ || '')}</span>
+                `
+                button.addEventListener('click', async () => {
+                    await loadTaskById(item.task_id, taskTypeSelect.value)
+                })
+                taskDirectory.appendChild(button)
+            })
+        }
+
+        async function loadTaskDirectory(type) {
+            const res = await fetch(`/tasks/my-list?type=${encodeURIComponent(type)}`)
+            if (res.status === 403) {
+                window.location.href = '/login'
+                return
+            }
+            if (!res.ok) {
+                renderTaskDirectory([])
+                return
+            }
+            const payload = await res.json()
+            renderTaskDirectory(payload.items || [])
+        }
+
+        async function loadTaskById(taskId, type) {
+            const res = await fetch(`/task/${encodeURIComponent(taskId)}`)
+            if (!res.ok) {
+                alert('加载任务失败')
+                await loadTaskDirectory(type)
+                return
+            }
+            const task = await res.json()
+            displayTask(task, type)
             await refreshRemainingStats(type)
-            const res = await fetch(`/tasks/my-next?type=${encodeURIComponent(type)}`)
+            await loadTaskDirectory(type)
+        }
+
+        async function loadNext(type, skipCurrent = false) {
+            if (skipCurrent) {
+                await loadTaskDirectory(type)
+                const buttons = [...taskDirectory.querySelectorAll('.task-directory-item')]
+                if (buttons.length > 0) {
+                    const currentIndex = buttons.findIndex((button) => button.dataset.taskId === currentTask?.task_id)
+                    const nextIndex = currentIndex >= 0 ? (currentIndex + 1) % buttons.length : 0
+                    await loadTaskById(buttons[nextIndex].dataset.taskId, type)
+                    return
+                }
+            }
+            await refreshRemainingStats(type)
+            const skip = skipCurrent && currentTask ? `&skip=${encodeURIComponent(currentTask.task_id)}` : ''
+            const res = await fetch(`/tasks/my-next?type=${encodeURIComponent(type)}${skip}`)
             if (res.status === 403) {
                 window.location.href = '/login'
                 return
             }
             if (!res.ok) {
                 const payload = await res.json().catch(() => ({}))
+                if (skipCurrent && payload.error === 'no available task' && currentTask) {
+                    await loadTaskDirectory(type)
+                    return
+                }
                 currentTask = null
                 taskArea.hidden = true
                 if (payload.error === 'no available task') {
-                    alert(type === 'hard' ? '页面一没有剩余任务' : '页面二没有剩余任务')
+                    await loadTaskDirectory(type)
                 } else {
                     alert(payload.error || '加载任务失败')
                 }
@@ -515,8 +683,8 @@
 
             const hasCurrentImage = Boolean(currentTask.image_path)
             const hasGtInfo = type !== 'hard' || (currentTask.gt_annotation || []).length > 0
-            const predList = type === 'hard' ? currentTask.model_prediction : currentTask.pseudo_label_prediction
-            const hasPredInfo = (predList || []).length > 0
+            const predKey = type === 'hard' ? 'model_prediction' : 'pseudo_label_prediction'
+            const hasPredInfo = Object.prototype.hasOwnProperty.call(currentTask, predKey)
 
             currentReportImages = currentTask.report_image_paths && currentTask.report_image_paths.length
                 ? currentTask.report_image_paths
@@ -525,10 +693,11 @@
             renderReportImage()
             setImageSource(currentImg, hasCurrentImage ? assetUrl(currentTask.task_id, 'current') : '')
             setImageSource(gtImg, hasGtInfo ? `/render?task_id=${encodeURIComponent(currentTask.task_id)}&show=gt` : '')
-            setImageSource(predImg, hasPredInfo ? `/render?task_id=${encodeURIComponent(currentTask.task_id)}&show=pred` : '')
+            setImageSource(predImg, hasCurrentImage && hasPredInfo ? `/render?task_id=${encodeURIComponent(currentTask.task_id)}&show=pred` : '')
 
             renderRelatedImages(currentTask)
             await refreshRemainingStats(type)
+            await loadTaskDirectory(type)
         }
 
         async function refreshRemainingStats(type) {
@@ -613,8 +782,8 @@
                     body: JSON.stringify(payload)
                 })
                 if (r.ok) {
-                    alert('提交成功')
-                    await loadNext(taskTypeSelect.value)
+                    showToast('提交成功！')
+                    await loadNext(taskTypeSelect.value, true)
                     return
                 }
 

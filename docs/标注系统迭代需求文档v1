@@ -1,0 +1,56 @@
+标注系统版本迭代文档
+
+# V1
+
+## 待优化
+
+1. 
+
+![img](https://rcnez2l7edbu.feishu.cn/space/api/box/stream/download/asynccode/?code=Mjc1NTVkM2I2NGFmODRkZDdkYTVlNDIwZWU5ZjgyYzRfN3pOS1pvQkt4d3d0ek1rUHFpSDloaGNKRXNma2RPYzlfVG9rZW46VUdkdmJIS3I3b1V2blB4ZmR0emNEYUh6bnRlXzE3Nzg3MjYxMjM6MTc3ODcyOTcyM19WNA)
+
+这个提交确认按钮感觉不需要，直接跳一个提示就行，不需要点击的那种。
+
+1. 
+
+![img](https://rcnez2l7edbu.feishu.cn/space/api/box/stream/download/asynccode/?code=YzBkYTc0N2M1NGE2YjliMTA1MmFkNWU5ZGM2N2RkNDdfdW13RjhVRXFYdmFOU20zY25DZ2FqWFYxRUc5RERnYklfVG9rZW46QXF0YmJLQkxCb1o0T0t4MzA2d2N1V3RVblBjXzE3Nzg3MjYxMjM6MTc3ODcyOTcyM19WNA)
+
+这里似乎就是模型没有预测，认为是阴性图片，但是可以展示一下图片哪怕没有标注框，不然医生可能以为出问题了
+
+1. 
+
+![img](https://rcnez2l7edbu.feishu.cn/space/api/box/stream/download/asynccode/?code=ZTc3ODRjNTgyM2JlZTc3Y2JlMmU4NDkxNDRlN2U3OWVfR2VrZm42RmVyRWp2QTNaRmNZNFg5Z3hjNjBnckhuS29fVG9rZW46RHg0RmJhcGJhb0t2Y0d4TWs4amN1UXJpbk1iXzE3Nzg3MjYxMjM6MTc3ODcyOTcyM19WNA)
+
+1个任务分配给 doctor_1 ，医生审核之后，状态变为 ”已审核: doctor_1“，我原本以为应该就不能再分配给第二个医生了，但是我尝试了一下，是可以的，但是状态却变成了 ”已审核：doctor_2“，我觉得这里要不一个任务只能一个医生审核，分配之后，涉及到这个任务再次分配时按钮直接 disable。
+
+1. 
+
+![img](https://rcnez2l7edbu.feishu.cn/space/api/box/stream/download/asynccode/?code=ZDNmYWI2MTYzZmIzM2M1OThlYmE2Y2YxMWEyZjdhYWRfNk9RZW1HUjdKb3pQNlQ4Wmt2QzJoWHFQMkdGdzg4NkhfVG9rZW46UHpHWmJKWHcxbzhKSDd4WlZ3ZWNDWlJablhmXzE3Nzg3MjYxMjM6MTc3ODcyOTcyM19WNA)
+
+当医生审核一个图片还没结束时，我想跳着看或者想要直接看下一个病例，这个取下一条按钮似乎不生效，这里可以做成取下一张图/取下一个病例的图片，甚至可以做一个目录类似的UI，支持点击跳转
+
+1. 
+
+![img](https://rcnez2l7edbu.feishu.cn/space/api/box/stream/download/asynccode/?code=MTNhODk3ZmM5NjYzNmRjY2ZjYTc0NzEyNGQ0ZGNiMmNfM1RXemxiRXAwU0NHSTZ5Z3NJRGo3aXpaM1VWbEFhVHlfVG9rZW46S2lYcWJ0cVE5b1RiNXh4OHZpZGNIWDNZbnVoXzE3Nzg3MjYxMjM6MTc3ODcyOTcyM19WNA)
+
+我尝试了导出，导出的文件保存是有的，但是就是如果医生审核中途管理员进行导出就存在问题，
+
+![img](https://rcnez2l7edbu.feishu.cn/space/api/box/stream/download/asynccode/?code=NDM4MTUzMWZiZTI5MWRjNDgzNWU3YjI3YTAzM2FkMmNfYmNxMlhXZFdUTk45T1dhd1NvcmlTNU1lb1pmQkxrYzRfVG9rZW46VTdmNmJzQTBTb1Iya1d4d1RZWGNHR2pHbjNmXzE3Nzg3MjYxMjM6MTc3ODcyOTcyM19WNA)
+
+任务列表中有很多 已分配的状态，但是医生的审核界面空了。(这个我刚刚刷新页面重新看了 一下，又有了，可能是加载问题。但是尝试第二次导出时，会覆盖第一次导出的结果，虽然是包含关系，但是我感觉向我下面说的那样设计可能合理一些，你有什么想法或者难点也可以和我交流)
+
+![img](https://rcnez2l7edbu.feishu.cn/space/api/box/stream/download/asynccode/?code=MzZmNmY2ZWNiOTk2NmZmZTkwMjM5MmEwMWY4NGMzMzdfUDROSXQ0NHlZWG0yeHpFeExGZHNKVjZTaERDNURmM0RfVG9rZW46SVlhU2JpZ0Jub1RhcDN4enpvU2MwVGZnbkVnXzE3Nzg3MjYxMjM6MTc3ODcyOTcyM19WNA)
+
+总之，就是这一部分，我希望是对于这个任务，管理员中途导出后，那些已审核的结果就导出来了，然后剩余的任务还是在系统里面，医生接着可以标。可以把任务分配状态这个字段利用起来，比如：未分配，已分配，已审核，已导出。
+
+不同状态下的任务可以做独特的处理，比如未分配时就可以随便分给一个医生；当分配给一个医生后，这个任务就不能再分给其他的医生了，也就是对该任务的分配按钮 disable；当这个医生提交结果后，就变为了已审核，甚至可以做成已审核的页面医生照样可以访问并修改，以最后一次的结果为准，页面中同时也提醒医生这个图审核过了，之前的选择是什么，方便复核；当已审核的状态有了之后，管理员就可以对已审核的页面进行导出，导出后指定的任务变成了已导出状态，这个时候医生那边就看不到这个任务了，因为此时结果基本已经盖棺定论了。
+
+然后下一次导出的话我感觉可以就导出这一次导出对比上一次新增的那些已审核的页面，其他的就不要也带入了，并且区分一下导出目录，可以使用后缀或者精确的导出时间来区分，目前是精确到日期，可以精确到分秒，总之就是需要支持多次导出的功能
+
+（上述所说的任务都是以一张图为单位的）
+
+## 待办
+
+1. 目前似乎只支持导入一个目录进行，后续应该是需要支持多个任务目录一起导入的，可以按照器官来进行区分，比如导入肾脏目录，肝脏目录等，可以看看怎么设计
+2. 目前图中的标注类别展示是拼音，这个是由于 json 文件导致的，可以试试将 coco 格式的 json 文件中的 category 名称修改为中文是否可以展示，可能有字体方面的要求。例如下图中的 name 可不可以改为”肾脏恶性肿瘤“进行展示
+
+![img](https://rcnez2l7edbu.feishu.cn/space/api/box/stream/download/asynccode/?code=NTgxMWQzMjkyOTc1MTQyZmU5MDRiZDgzYjg0YTY4N2Zfb01BVWhQbXV2RjN2eUNVWDZMSnNiR1phT1RLQlI5NTlfVG9rZW46TDg2bGJqcUVLb2JTYTV4RWRPbGNGMVJwbmZkXzE3Nzg3MjYxMjM6MTc3ODcyOTcyM19WNA)

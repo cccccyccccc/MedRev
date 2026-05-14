@@ -54,12 +54,24 @@ def init_db():
                 created_at DATETIME DEFAULT CURRENT_TIMESTAMP
             )
         ''')
+
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS exported_tasks (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                run_id TEXT NOT NULL,
+                task_id TEXT NOT NULL,
+                export_batch_id TEXT NOT NULL,
+                exported_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                UNIQUE(run_id, task_id)
+            )
+        ''')
         
         # Indexes for query performance
         cursor.execute('CREATE INDEX IF NOT EXISTS idx_assignments_run_task ON assignments(run_id, task_id)')
         cursor.execute('CREATE INDEX IF NOT EXISTS idx_assignments_doctor ON assignments(assigned_doctor)')
         cursor.execute('CREATE INDEX IF NOT EXISTS idx_raw_reviews_run_id ON raw_reviews(run_id)')
         cursor.execute('CREATE INDEX IF NOT EXISTS idx_raw_reviews_task_id ON raw_reviews(task_id)')
+        cursor.execute('CREATE INDEX IF NOT EXISTS idx_exported_tasks_run_task ON exported_tasks(run_id, task_id)')
         
         conn.commit()
     finally:
@@ -206,6 +218,47 @@ def get_reviews_for_run(run_id: str) -> List[Dict[str, Any]]:
         cursor.execute('SELECT * FROM raw_reviews WHERE run_id = ? ORDER BY created_at', (run_id,))
         rows = cursor.fetchall()
         return [dict(row) for row in rows]
+    finally:
+        conn.close()
+
+
+def get_latest_reviews_for_run(run_id: str) -> Dict[str, Dict[str, Any]]:
+    """Get the latest review per task for a run."""
+    latest = {}
+    for row in get_reviews_for_run(run_id):
+        record = dict(row) if hasattr(row, 'keys') else row
+        task_id = record.get('task_id')
+        if task_id:
+            latest[task_id] = record
+    return latest
+
+
+def get_exported_tasks_for_run(run_id: str) -> Dict[str, Dict[str, Any]]:
+    """Get exported task metadata keyed by task_id."""
+    conn = get_connection()
+    try:
+        cursor = conn.cursor()
+        cursor.execute('SELECT * FROM exported_tasks WHERE run_id = ?', (run_id,))
+        return {row['task_id']: dict(row) for row in cursor.fetchall()}
+    finally:
+        conn.close()
+
+
+def mark_tasks_exported(run_id: str, task_ids: List[str], export_batch_id: str) -> bool:
+    """Mark tasks as exported in a batch. Existing exported marks are kept."""
+    conn = get_connection()
+    try:
+        cursor = conn.cursor()
+        for task_id in task_ids:
+            cursor.execute(
+                'INSERT OR IGNORE INTO exported_tasks (run_id, task_id, export_batch_id) VALUES (?, ?, ?)',
+                (run_id, task_id, export_batch_id),
+            )
+        conn.commit()
+        return True
+    except Exception as e:
+        print(f"Error marking tasks exported: {e}")
+        return False
     finally:
         conn.close()
 

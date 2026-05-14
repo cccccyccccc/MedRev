@@ -413,6 +413,11 @@
             box-shadow: inset 4px 0 0 rgba(110, 231, 255, 0.82);
         }
 
+        tbody tr.selectable-row.is-locked {
+            cursor: not-allowed;
+            opacity: 0.72;
+        }
+
         .select-cell {
             width: 56px;
             text-align: center;
@@ -428,6 +433,11 @@
             accent-color: #6ee7ff;
         }
 
+        .task-check:disabled {
+            cursor: not-allowed;
+            opacity: 0.45;
+        }
+
         .task-check {
             transform: translateY(2px);
         }
@@ -439,6 +449,7 @@
             padding: 6px 10px;
             border-radius: 999px;
             font-size: 12px;
+            white-space: nowrap;
             border: 1px solid rgba(255, 255, 255, 0.12);
         }
 
@@ -455,6 +466,11 @@
         .status.reviewed {
             color: #ccfbf1;
             background: rgba(45, 212, 191, 0.1);
+        }
+
+        .status.exported {
+            color: #e9d5ff;
+            background: rgba(168, 85, 247, 0.12);
         }
 
         .tasks-toolbar {
@@ -830,6 +846,7 @@
                         <option value="unassigned">未分配</option>
                         <option value="assigned">已分配</option>
                         <option value="reviewed">已审核</option>
+                        <option value="exported">已导出</option>
                     </select>
                 </div>
                 <div class="field">
@@ -859,7 +876,7 @@
                                 <th>任务</th>
                                 <th>病例 / 图片</th>
                                 <th>模型版本</th>
-                                <th>状态</th>
+                                <th style="min-width:92px;">状态</th>
                                 <th>分配给</th>
                                 <th>备注</th>
                             </tr>
@@ -906,13 +923,19 @@
         }
 
         function statusBadge(status, assignedTo = '') {
+            const isExported = status === 'exported'
             const isReviewed = status === 'reviewed'
             const isAssigned = status === 'assigned' || !!assignedTo
-            const className = isReviewed ? 'reviewed' : (isAssigned ? 'assigned' : 'pending')
-            const label = isReviewed
-                ? (isAssigned ? `已审核 · ${assignedTo}` : '已审核')
-                : (isAssigned ? `已分配${assignedTo ? ` · ${assignedTo}` : ''}` : '未分配')
+            const className = isExported ? 'exported' : (isReviewed ? 'reviewed' : (isAssigned ? 'assigned' : 'pending'))
+            const label = isExported ? '已导出' : (isReviewed ? '已审核' : (isAssigned ? '已分配' : '未分配'))
             return `<span class="status ${className}">${label}</span>`
+        }
+
+        function effectiveTaskStatus(task, reviewedIds) {
+            if (task.status === 'exported') return 'exported'
+            if (reviewedIds.has(task.task_id) || task.status === 'reviewed') return 'reviewed'
+            if (task.assigned_to || task.status === 'assigned') return 'assigned'
+            return 'unassigned'
         }
 
         function doctorOptions(includeAll = true) {
@@ -1038,12 +1061,19 @@
                     if (!haystack.includes(search)) return false
                 }
                 return true
+            }).sort((a, b) => {
+                const order = { unassigned: 0, assigned: 1, reviewed: 2, exported: 3 }
+                return order[effectiveTaskStatus(a, reviewedIds)] - order[effectiveTaskStatus(b, reviewedIds)]
             })
 
             el('taskTableBody').innerHTML = list.length
-                ? list.map((task) => `
-                    <tr class="selectable-row">
-                        <td class="select-cell"><input type="checkbox" class="task-check" value="${task.task_id}" aria-label="选择任务"></td>
+                ? list.map((task) => {
+                    const taskStatus = effectiveTaskStatus(task, reviewedIds)
+                    const isLocked = taskStatus !== 'unassigned'
+                    const statusPerson = taskStatus === 'reviewed' ? (task.reviewed_by || task.assigned_to || '') : (task.assigned_to || '')
+                    return `
+                    <tr class="selectable-row${isLocked ? ' is-locked' : ''}">
+                        <td class="select-cell"><input type="checkbox" class="task-check" value="${task.task_id}" ${isLocked ? 'disabled' : ''} aria-label="选择任务"></td>
                         <td>
                             <div><strong>${task.task_id}</strong></div>
                             <div class="list-item-meta">${taskKindLabel(type)} · ${task.organ || '—'}</div>
@@ -1053,11 +1083,11 @@
                             <div class="list-item-meta">${task.image_name || '—'}</div>
                         </td>
                         <td>${task.model_version || '—'}</td>
-                        <td>${statusBadge(reviewedIds.has(task.task_id) ? 'reviewed' : task.status, task.assigned_to)}</td>
+                        <td>${statusBadge(taskStatus, statusPerson)}</td>
                         <td>${task.assigned_to ? `<span class="pill">${task.assigned_to}</span>` : '—'}</td>
                         <td class="hide-mobile">${task.model_confidence != null ? `conf ${task.model_confidence}` : '—'}</td>
                     </tr>
-                `).join('')
+                `}).join('')
                 : `<tr><td colspan="7" style="padding:24px 16px;color:var(--muted)">没有符合筛选条件的任务</td></tr>`
             wireTaskRowSelection()
         }
@@ -1070,10 +1100,12 @@
                 syncRow()
                 checkbox.addEventListener('click', (event) => {
                     event.stopPropagation()
+                    if (checkbox.disabled) return
                     syncRow()
                     updateSelectAllState()
                 })
                 row.addEventListener('click', (event) => {
+                    if (checkbox.disabled) return
                     const interactive = event.target.closest('a, button, input, select, label')
                     if (interactive && interactive !== checkbox) return
                     checkbox.checked = !checkbox.checked
@@ -1085,7 +1117,7 @@
         }
 
         function updateSelectAllState() {
-            const boxes = [...document.querySelectorAll('.task-check')]
+            const boxes = [...document.querySelectorAll('.task-check:not(:disabled)')]
             const selectAll = el('selectAll')
             if (!selectAll) return
             const checkedCount = boxes.filter((box) => box.checked).length
@@ -1094,7 +1126,7 @@
         }
 
         function selectedTaskIds() {
-            return [...document.querySelectorAll('.task-check:checked')].map((el) => el.value)
+            return [...document.querySelectorAll('.task-check:checked:not(:disabled)')].map((el) => el.value)
         }
 
         async function assignSelected() {
@@ -1107,7 +1139,14 @@
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({ assignee, task_ids: taskIds })
             })
-            if (!res.ok) return alert('分配失败')
+            if (!res.ok) {
+                const payload = await res.json().catch(() => ({}))
+                if (res.status === 409) {
+                    await reloadDashboard(true)
+                    return alert('部分任务已分配或已审核，不能再次分配。列表已刷新。')
+                }
+                return alert(payload.error || '分配失败')
+            }
             await reloadDashboard(true)
         }
 
@@ -1137,10 +1176,19 @@
                     `stdout: ${(payload.stdout || '').trim() || '无'}`,
                     `stderr: ${(payload.stderr || '').trim() || '无'}`,
                 ]
+                lines.splice(
+                    0,
+                    lines.length,
+                    `export_batch_id: ${payload.export_batch_id || '—'}`,
+                    `export_dir: ${payload.export_dir || '—'}`,
+                    `exported_task_count: ${payload.exported_task_count ?? 0}`,
+                    `message: ${payload.message || '—'}`,
+                )
                 el('exportResultList').innerHTML = lines.map((text) => `
                     <div class="list-item"><div class="list-item-title">${text}</div></div>
                 `).join('')
                 if (!res.ok) alert('导出失败，请查看输出')
+                if (res.ok) await reloadDashboard(true)
             } finally {
                 btn.disabled = false
                 btn.textContent = '手动导出结果'
@@ -1168,7 +1216,7 @@
             el('doctorFilter').addEventListener('change', renderTasks)
             el('taskSearch').addEventListener('input', renderTasks)
             el('selectAll').addEventListener('change', (event) => {
-                document.querySelectorAll('.task-check').forEach((checkbox) => {
+                document.querySelectorAll('.task-check:not(:disabled)').forEach((checkbox) => {
                     checkbox.checked = event.target.checked
                     checkbox.closest('tr')?.classList.toggle('is-selected', checkbox.checked)
                 })

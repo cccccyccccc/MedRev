@@ -1,4 +1,4 @@
-from flask import Flask, jsonify, request, abort, send_file, make_response, session, redirect, url_for
+﻿from flask import Flask, jsonify, request, abort, send_file, make_response, session, redirect, url_for
 from pathlib import Path
 import json
 import subprocess
@@ -10,6 +10,7 @@ from io import BytesIO
 from PIL import Image, ImageDraw, ImageFont
 from flask import render_template
 from datetime import datetime
+from collections import Counter
 import string
 
 # Add parent directory to path so we can import backend module
@@ -24,14 +25,14 @@ DEFAULT_CONFIG = {
     'run_id': 'test_run_001',
     'reset_outputs_on_start': True,
     'bootstrap_run_id': 'test_run_001',
-    'bootstrap_organ': '肾脏',
+    'bootstrap_organ': '鑲捐剰',
     'data_root': 'Test',
     'prepared_data_root': 'test_data',
     'conf_threshold': 0.85,
     'iou_threshold': 0.5,
     'hard_sample_mode': 'strict',
-    # auto export config: if true, after each review a background export is triggered
-    'auto_export': True,
+    # Export is intentionally manual: admin export marks reviewed tasks as finalized.
+    'auto_export': False,
 }
 
 
@@ -133,7 +134,7 @@ def prepare_data_root_for_generation(data_root: str, organ: str) -> str:
     before generating tasks.
     """
     selected = resolve_workspace_path(data_root)
-    organized_dir = selected / "整理后标注目录" / organ
+    organized_dir = selected / "\u6574\u7406\u540e\u6807\u6ce8\u76ee\u5f55" / organ
     if organized_dir.exists():
         return str(selected)
 
@@ -175,7 +176,7 @@ def bootstrap_test_stage_data():
         return
 
     bootstrap_run_id = CONFIG.get('bootstrap_run_id') or CONFIG.get('run_id') or 'test_run_001'
-    bootstrap_organ = CONFIG.get('bootstrap_organ') or '肾脏'
+    bootstrap_organ = CONFIG.get('bootstrap_organ') or '鑲捐剰'
     bootstrap_data_root = CONFIG.get('data_root') or 'Test'
 
     try:
@@ -314,13 +315,37 @@ def get_task_type_meta(task_list_type: str):
 def get_reviewed_task_ids(task_type: str = None):
     """Get set of reviewed task IDs from database."""
     reviewed = set()
-    for row in db.get_reviews_for_run(RUN_ID):
+    for row in db.get_latest_reviews_for_run(RUN_ID).values():
         if task_type and row.get('task_type') != task_type:
             continue
         task_id = row.get('task_id')
         if task_id:
             reviewed.add(task_id)
     return reviewed
+
+
+def get_reviewed_task_reviewers(task_type: str = None):
+    """Get task_id -> reviewer_id for reviewed tasks in the current run."""
+    reviewed = {}
+    for row in db.get_latest_reviews_for_run(RUN_ID).values():
+        if task_type and row.get('task_type') != task_type:
+            continue
+        task_id = row.get('task_id')
+        reviewer_id = row.get('reviewer_id')
+        if task_id and reviewer_id:
+            reviewed[task_id] = reviewer_id
+    return reviewed
+
+
+def get_latest_task_reviews(task_type: str = None):
+    reviews = db.get_latest_reviews_for_run(RUN_ID)
+    if not task_type:
+        return reviews
+    return {task_id: row for task_id, row in reviews.items() if row.get('task_type') == task_type}
+
+
+def get_exported_task_ids():
+    return set(db.get_exported_tasks_for_run(RUN_ID).keys())
 
 
 def get_assigned_task_ids_for_user(user: str, task_type: str = None):
@@ -352,7 +377,7 @@ def get_task_kind(task_id: str):
 
 
 def summarize_reviews():
-    raw_reviews = db.get_reviews_for_run(RUN_ID)
+    raw_reviews = list(db.get_latest_reviews_for_run(RUN_ID).values())
     gt_issue_count = len(read_jsonl(GT_ISSUE_LIST))
     accepted_count = len(read_jsonl(ACCEPTED_PSEUDO_LABELS))
     pseudo_error_count = len(read_jsonl(PSEUDO_LABEL_ERROR_LIST))
@@ -429,8 +454,11 @@ def summarize_reviews():
     pseudo_tasks = read_tasks('pseudo_label_review.jsonl')
     hard_reviewed = get_reviewed_task_ids(task_type='hard_sample_gt_review')
     pseudo_reviewed = get_reviewed_task_ids(task_type='pseudo_label_review')
-    hard_remaining = len([t for t in hard_tasks if t.get('task_id') not in hard_reviewed])
-    pseudo_remaining = len([t for t in pseudo_tasks if t.get('task_id') not in pseudo_reviewed])
+    exported = get_exported_task_ids()
+    hard_exported = {task_id for task_id in exported if task_id and '_hard_' in task_id}
+    pseudo_exported = {task_id for task_id in exported if task_id and '_pseudo_' in task_id}
+    hard_remaining = len([t for t in hard_tasks if t.get('task_id') not in exported])
+    pseudo_remaining = len([t for t in pseudo_tasks if t.get('task_id') not in exported])
 
     return {
         'run_id': RUN_ID,
@@ -443,10 +471,11 @@ def summarize_reviews():
             'prepared_data_root': CONFIG.get('prepared_data_root', 'test_data'),
         },
         'tasks': {
-            'hard': {'total': len(hard_tasks), 'reviewed': len(hard_tasks) - hard_remaining, 'remaining': hard_remaining},
-            'pseudo': {'total': len(pseudo_tasks), 'reviewed': len(pseudo_tasks) - pseudo_remaining, 'remaining': pseudo_remaining},
+            'hard': {'total': len(hard_tasks), 'reviewed': len(hard_reviewed), 'exported': len(hard_exported), 'remaining': hard_remaining},
+            'pseudo': {'total': len(pseudo_tasks), 'reviewed': len(pseudo_reviewed), 'exported': len(pseudo_exported), 'remaining': pseudo_remaining},
             'total': len(hard_tasks) + len(pseudo_tasks),
             'reviewed_total': len(raw_reviews),
+            'exported_total': len(exported),
             'remaining_total': hard_remaining + pseudo_remaining,
             'hard_reviewed_ids': sorted(list(hard_reviewed)),
             'pseudo_reviewed_ids': sorted(list(pseudo_reviewed)),
@@ -564,7 +593,7 @@ def get_next_task():
     if not filename:
         return jsonify({'error': 'invalid task type'}), 400
 
-    reviewed = get_reviewed_task_ids(task_type=task_type)
+    exported = get_exported_task_ids()
     # if logged-in doctor, only return tasks assigned to them
     user = session.get('user')
     role = session.get('role')
@@ -573,7 +602,7 @@ def get_next_task():
         assigned_to_user = get_assigned_task_ids_for_user(user, task_type=task_type)
     for task in read_tasks(filename):
         task_id = task.get('task_id')
-        if not task_id or task_id in reviewed:
+        if not task_id or task_id in exported:
             continue
         # if doctor, only return assigned tasks
         if user and role == 'doctor' and task_id not in assigned_to_user:
@@ -594,16 +623,55 @@ def get_my_next_task():
     if not filename:
         return jsonify({'error': 'invalid task type'}), 400
 
-    reviewed = get_reviewed_task_ids(task_type=task_type)
+    skip_task_id = request.args.get('skip')
+    exported = get_exported_task_ids()
     assigned_to_user = get_assigned_task_ids_for_user(user, task_type=task_type)
     for task in read_tasks(filename):
         task_id = task.get('task_id')
-        if not task_id or task_id in reviewed:
+        if not task_id or task_id in exported:
+            continue
+        if skip_task_id and task_id == skip_task_id:
             continue
         if task_id not in assigned_to_user:
             continue
         return jsonify(task)
     return jsonify({'error': 'no available task'}), 404
+
+
+@app.route('/tasks/my-list', methods=['GET'])
+def get_my_task_list():
+    user = session.get('user')
+    role = session.get('role')
+    if not user or role != 'doctor':
+        return jsonify({'error': 'doctor login required'}), 403
+
+    task_list_type = request.args.get('type', 'hard')
+    filename, task_type = get_task_type_meta(task_list_type)
+    if not filename:
+        return jsonify({'error': 'invalid task type'}), 400
+
+    reviewed = get_reviewed_task_ids(task_type=task_type)
+    latest_reviews = get_latest_task_reviews(task_type=task_type)
+    exported = get_exported_task_ids()
+    assigned_to_user = get_assigned_task_ids_for_user(user, task_type=task_type)
+    items = []
+    for task in read_tasks(filename):
+        task_id = task.get('task_id')
+        if not task_id or task_id not in assigned_to_user or task_id in exported:
+            continue
+        review = latest_reviews.get(task_id) or {}
+        items.append({
+            'task_id': task_id,
+            'case_id': task.get('case_id'),
+            'image_name': task.get('image_name'),
+            'organ': task.get('organ'),
+            'model_version': task.get('model_version'),
+            'status': 'reviewed' if task_id in reviewed else 'assigned',
+            'review_result': review.get('review_result'),
+            'error_type': review.get('error_type'),
+        })
+
+    return jsonify({'items': items})
 
 
 @app.route('/tasks/remaining', methods=['GET'])
@@ -624,27 +692,27 @@ def get_remaining_stats():
         pseudo_total = len([t for t in pseudo_tasks if t.get('task_id') in pseudo_assigned])
         hard_remaining = len([
             t for t in hard_tasks
-            if t.get('task_id') in hard_assigned and t.get('task_id') not in hard_reviewed
+            if t.get('task_id') in hard_assigned and t.get('task_id') not in hard_reviewed and t.get('task_id') not in exported
         ])
         pseudo_remaining = len([
             t for t in pseudo_tasks
-            if t.get('task_id') in pseudo_assigned and t.get('task_id') not in pseudo_reviewed
+            if t.get('task_id') in pseudo_assigned and t.get('task_id') not in pseudo_reviewed and t.get('task_id') not in exported
         ])
     else:
         hard_total = len(hard_tasks)
         pseudo_total = len(pseudo_tasks)
-        hard_remaining = len([t for t in hard_tasks if t.get('task_id') not in hard_reviewed])
-        pseudo_remaining = len([t for t in pseudo_tasks if t.get('task_id') not in pseudo_reviewed])
+        hard_remaining = len([t for t in hard_tasks if t.get('task_id') not in hard_reviewed and t.get('task_id') not in exported])
+        pseudo_remaining = len([t for t in pseudo_tasks if t.get('task_id') not in pseudo_reviewed and t.get('task_id') not in exported])
 
     return jsonify({
         'hard': {
             'total': hard_total,
-            'reviewed': hard_total - hard_remaining,
+            'reviewed': len([t for t in hard_tasks if t.get('task_id') in hard_assigned and t.get('task_id') in hard_reviewed]) if user and role == 'doctor' else len(hard_reviewed),
             'remaining': hard_remaining,
         },
         'pseudo': {
             'total': pseudo_total,
-            'reviewed': pseudo_total - pseudo_remaining,
+            'reviewed': len([t for t in pseudo_tasks if t.get('task_id') in pseudo_assigned and t.get('task_id') in pseudo_reviewed]) if user and role == 'doctor' else len(pseudo_reviewed),
             'remaining': pseudo_remaining,
         },
         'total_remaining': hard_remaining + pseudo_remaining,
@@ -662,6 +730,7 @@ def get_my_remaining_stats():
     pseudo_tasks = read_tasks('pseudo_label_review.jsonl')
     hard_reviewed = get_reviewed_task_ids(task_type='hard_sample_gt_review')
     pseudo_reviewed = get_reviewed_task_ids(task_type='pseudo_label_review')
+    exported = get_exported_task_ids()
 
     hard_assigned = get_assigned_task_ids_for_user(user, task_type='hard_sample_gt_review')
     pseudo_assigned = get_assigned_task_ids_for_user(user, task_type='pseudo_label_review')
@@ -670,22 +739,22 @@ def get_my_remaining_stats():
     pseudo_total = len([t for t in pseudo_tasks if t.get('task_id') in pseudo_assigned])
     hard_remaining = len([
         t for t in hard_tasks
-        if t.get('task_id') in hard_assigned and t.get('task_id') not in hard_reviewed
+        if t.get('task_id') in hard_assigned and t.get('task_id') not in hard_reviewed and t.get('task_id') not in exported
     ])
     pseudo_remaining = len([
         t for t in pseudo_tasks
-        if t.get('task_id') in pseudo_assigned and t.get('task_id') not in pseudo_reviewed
+        if t.get('task_id') in pseudo_assigned and t.get('task_id') not in pseudo_reviewed and t.get('task_id') not in exported
     ])
 
     return jsonify({
         'hard': {
             'total': hard_total,
-            'reviewed': hard_total - hard_remaining,
+            'reviewed': len([t for t in hard_tasks if t.get('task_id') in hard_assigned and t.get('task_id') in hard_reviewed]),
             'remaining': hard_remaining,
         },
         'pseudo': {
             'total': pseudo_total,
-            'reviewed': pseudo_total - pseudo_remaining,
+            'reviewed': len([t for t in pseudo_tasks if t.get('task_id') in pseudo_assigned and t.get('task_id') in pseudo_reviewed]),
             'remaining': pseudo_remaining,
         },
         'total_remaining': hard_remaining + pseudo_remaining,
@@ -697,6 +766,24 @@ def get_task(task_id):
     # search both lists
     task = find_task(task_id)
     if task:
+        exported = db.get_exported_tasks_for_run(RUN_ID).get(task_id)
+        if exported:
+            if session.get('role') == 'doctor':
+                abort(404)
+            task['status'] = 'exported'
+            task['export_batch_id'] = exported.get('export_batch_id')
+        else:
+            review = db.get_latest_reviews_for_run(RUN_ID).get(task_id)
+            if review:
+                task['status'] = 'reviewed'
+                task['last_review'] = {
+                    'review_result': review.get('review_result'),
+                    'error_type': review.get('error_type'),
+                    'reviewer_id': review.get('reviewer_id'),
+                    'submitted_at': review.get('submitted_at'),
+                }
+            else:
+                task['status'] = 'assigned' if task_id in load_assignments() else 'unassigned'
         return jsonify(task)
     abort(404)
 
@@ -705,6 +792,8 @@ def get_task(task_id):
 def get_task_asset(task_id, kind):
     task = find_task(task_id)
     if not task:
+        abort(404)
+    if session.get('role') == 'doctor' and task_id in get_exported_task_ids():
         abort(404)
 
     if kind == 'current':
@@ -741,6 +830,8 @@ def post_review():
     # always bind review to current runtime run_id
     data['run_id'] = RUN_ID
     data['reviewer_id'] = user
+    if data['task_id'] in get_exported_task_ids():
+        return jsonify({'error': 'task already exported'}), 409
 
     # Save to database first, then mirror to JSONL so a failure can be reported cleanly.
     if not db.append_review(data):
@@ -759,13 +850,6 @@ def post_review():
         except Exception:
             pass
         return jsonify({'error': f'failed to save review jsonl: {exc}'}), 500
-    # trigger asynchronous export if enabled
-    try:
-        if CONFIG.get('auto_export'):
-            # spawn a background thread; the worker will skip if an export is already running
-            threading.Thread(target=run_export_background, args=(RUN_ID,), daemon=True).start()
-    except Exception:
-        pass
     return jsonify({'status': 'ok'})
 
 
@@ -794,6 +878,87 @@ def run_export_background(run_id: str):
             pass
     finally:
         export_lock.release()
+
+
+def write_jsonl(path: Path, rows):
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open('w', encoding='utf-8') as f:
+        for row in rows:
+            f.write(json.dumps(row, ensure_ascii=False) + '\n')
+
+
+def build_incremental_export(run_id: str):
+    task_rows = read_tasks('hard_sample_gt_review.jsonl') + read_tasks('pseudo_label_review.jsonl')
+    task_map = {row.get('task_id'): row for row in task_rows if row.get('task_id')}
+    latest_reviews = db.get_latest_reviews_for_run(run_id)
+    exported = set(db.get_exported_tasks_for_run(run_id).keys())
+    rows = [row for task_id, row in latest_reviews.items() if task_id not in exported]
+
+    batch_id = datetime.now().strftime('export_%Y%m%d_%H%M%S')
+    export_dir = REVIEW_DIR / 'exports' / batch_id
+    raw_rows = []
+    gt_issue_rows = []
+    accepted_rows = []
+    pseudo_error_rows = []
+    error_counter = Counter()
+
+    for row in rows:
+        task_id = row.get('task_id')
+        task = task_map.get(task_id, {})
+        raw_rows.append(row)
+        review_result = row.get('review_result')
+        if review_result == 'gt_error':
+            gt_issue_rows.append({
+                'run_id': row.get('run_id'),
+                'task_id': task_id,
+                'organ': row.get('organ'),
+                'image_name': row.get('image_name'),
+                'image_path': row.get('image_path'),
+            })
+        elif review_result == 'pseudo_label_correct':
+            accepted_rows.append({
+                'run_id': row.get('run_id'),
+                'task_id': task_id,
+                'organ': row.get('organ'),
+                'image_name': row.get('image_name'),
+                'image_path': row.get('image_path'),
+                'pseudo_label_prediction': task.get('pseudo_label_prediction', []),
+            })
+        elif review_result == 'pseudo_label_error':
+            error_type = row.get('error_type')
+            pseudo_error_rows.append({
+                'run_id': row.get('run_id'),
+                'task_id': task_id,
+                'organ': row.get('organ'),
+                'image_name': row.get('image_name'),
+                'image_path': row.get('image_path'),
+                'error_type': error_type,
+            })
+            if error_type:
+                error_counter[error_type] += 1
+
+    summary = {
+        'run_id': run_id,
+        'export_batch_id': batch_id,
+        'exported_at': datetime.now().isoformat(timespec='seconds'),
+        'exported_task_count': len(raw_rows),
+        'gt_error_count': len(gt_issue_rows),
+        'accepted_pseudo_label_count': len(accepted_rows),
+        'pseudo_label_error_count': len(pseudo_error_rows),
+        'error_type_count': {
+            'category_error': error_counter.get('category_error', 0),
+            'box_size_error': error_counter.get('box_size_error', 0),
+            'false_positive': error_counter.get('false_positive', 0),
+            'false_negative': error_counter.get('false_negative', 0),
+        },
+    }
+
+    write_jsonl(export_dir / 'raw_reviews.jsonl', raw_rows)
+    write_jsonl(export_dir / 'gt_issue_list.jsonl', gt_issue_rows)
+    write_jsonl(export_dir / 'accepted_pseudo_labels.jsonl', accepted_rows)
+    write_jsonl(export_dir / 'pseudo_label_error_list.jsonl', pseudo_error_rows)
+    (export_dir / 'summary.json').write_text(json.dumps(summary, ensure_ascii=False, indent=2), encoding='utf-8')
+    return batch_id, export_dir, summary, [row.get('task_id') for row in raw_rows if row.get('task_id')]
 
 
 @app.route('/render', methods=['GET'])
@@ -942,11 +1107,14 @@ def admin_tasks():
         return jsonify({'error': 'invalid task type'}), 400
     assignments = load_assignments()
     reviewed = get_reviewed_task_ids(task_type=task_type)
+    reviewed_by = get_reviewed_task_reviewers(task_type=task_type)
+    exported = get_exported_task_ids()
     out = []
     for t in read_tasks(filename):
         tid = t.get('task_id')
         t['assigned_to'] = assignments.get(tid)
-        t['status'] = 'reviewed' if tid in reviewed else ('assigned' if tid in assignments else 'unassigned')
+        t['reviewed_by'] = reviewed_by.get(tid)
+        t['status'] = 'exported' if tid in exported else ('reviewed' if tid in reviewed else ('assigned' if tid in assignments else 'unassigned'))
         out.append(t)
     return jsonify(out)
 
@@ -966,25 +1134,22 @@ def admin_export():
     role = session.get('role')
     if not user or role != 'admin':
         return jsonify({'error': 'forbidden'}), 403
-
-    script = ROOT / 'scripts' / 'export_review_results.py'
-    if not script.exists():
-        return jsonify({'error': 'export script not found'}), 404
-
-    result = subprocess.run(
-        [sys.executable, str(script)],
-        cwd=str(ROOT),
-        capture_output=True,
-        text=True,
-    )
-    payload = {
-        'returncode': result.returncode,
-        'stdout': result.stdout,
-        'stderr': result.stderr,
-    }
-    if result.returncode != 0:
-        return jsonify(payload), 500
-    return jsonify(payload)
+    if not export_lock.acquire(blocking=False):
+        return jsonify({'error': 'export already running'}), 409
+    try:
+        batch_id, export_dir, summary, task_ids = build_incremental_export(RUN_ID)
+        if not task_ids:
+            return jsonify({'status': 'ok', 'exported_task_count': 0, 'message': 'no reviewed tasks to export'})
+        if not db.mark_tasks_exported(RUN_ID, task_ids, batch_id):
+            return jsonify({'error': 'failed to mark tasks exported'}), 500
+        return jsonify({
+            'status': 'ok',
+            'export_batch_id': batch_id,
+            'export_dir': str(export_dir),
+            **summary,
+        })
+    finally:
+        export_lock.release()
 
 
 @app.route('/admin/assign', methods=['POST'])
@@ -999,6 +1164,18 @@ def admin_assign():
     if not assignee or not task_ids:
         return jsonify({'error': 'missing fields'}), 400
     assignments = load_assignments()
+    reviewed = get_reviewed_task_ids()
+    exported = get_exported_task_ids()
+    blocked = []
+    for tid in task_ids:
+        if tid in exported:
+            blocked.append({'task_id': tid, 'reason': 'exported', 'assigned_to': assignments.get(tid)})
+        elif tid in reviewed:
+            blocked.append({'task_id': tid, 'reason': 'reviewed', 'assigned_to': assignments.get(tid)})
+        elif tid in assignments:
+            blocked.append({'task_id': tid, 'reason': 'assigned', 'assigned_to': assignments.get(tid)})
+    if blocked:
+        return jsonify({'error': 'some tasks cannot be reassigned', 'blocked': blocked}), 409
     for tid in task_ids:
         assignments[tid] = assignee
     save_assignments(assignments)
@@ -1014,7 +1191,7 @@ def admin_generate():
         return jsonify({'error': 'forbidden'}), 403
 
     payload = request.get_json(force=True) or {}
-    organ = payload.get('organ') or '肾脏'
+    organ = payload.get('organ') or '鑲捐剰'
     model_version = payload.get('model_version') or ''
     data_version = payload.get('data_version') or ''
     data_root = payload.get('data_root') or CONFIG.get('data_root') or 'Test'
@@ -1099,7 +1276,7 @@ def login():
         return render_template(
             'login.html',
             next_url=request.args.get('next', ''),
-            error='请使用管理员账号登录' if request.args.get('msg') == 'admin_required' else None,
+            error='璇蜂娇鐢ㄧ鐞嗗憳璐﹀彿鐧诲綍' if request.args.get('msg') == 'admin_required' else None,
         )
     # POST
     payload = request.get_json(silent=True) or {}
@@ -1127,5 +1304,6 @@ def logout():
 
 if __name__ == '__main__':
     app.run(port=5001)
+
 
 
