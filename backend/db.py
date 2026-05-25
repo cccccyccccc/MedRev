@@ -51,9 +51,16 @@ def init_db():
                 error_type TEXT,
                 reviewer_id TEXT,
                 submitted_at DATETIME,
-                created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+                created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                annotation_json TEXT
             )
         ''')
+
+        # migration: add annotation_json if missing from existing table
+        try:
+            cursor.execute('ALTER TABLE raw_reviews ADD COLUMN annotation_json TEXT')
+        except Exception:
+            pass
 
         cursor.execute('''
             CREATE TABLE IF NOT EXISTS exported_tasks (
@@ -168,10 +175,10 @@ def append_review(review_record: Dict[str, Any]) -> bool:
     try:
         cursor = conn.cursor()
         cursor.execute('''
-            INSERT INTO raw_reviews 
-            (run_id, task_id, task_type, organ, image_name, image_path, 
-             review_result, error_type, reviewer_id, submitted_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            INSERT INTO raw_reviews
+            (run_id, task_id, task_type, organ, image_name, image_path,
+             review_result, error_type, reviewer_id, submitted_at, annotation_json)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         ''', (
             review_record.get('run_id'),
             review_record.get('task_id'),
@@ -183,6 +190,7 @@ def append_review(review_record: Dict[str, Any]) -> bool:
             review_record.get('error_type'),
             review_record.get('reviewer_id'),
             review_record.get('submitted_at'),
+            review_record.get('annotation_json'),
         ))
         conn.commit()
         return True

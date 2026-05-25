@@ -25,7 +25,7 @@ DEFAULT_CONFIG = {
     'run_id': 'test_run_001',
     'reset_outputs_on_start': True,
     'bootstrap_run_id': 'test_run_001',
-    'bootstrap_organ': '鑲捐剰',
+    'bootstrap_organ': '肾脏',
     'data_root': 'Test',
     'prepared_data_root': 'test_data',
     'conf_threshold': 0.85,
@@ -33,6 +33,9 @@ DEFAULT_CONFIG = {
     'hard_sample_mode': 'strict',
     # Export is intentionally manual: admin export marks reviewed tasks as finalized.
     'auto_export': False,
+    'echobox_project_id': None,
+    'echobox_data_dir': None,
+    'echobox_app_url': 'http://127.0.0.1:8000',
 }
 
 
@@ -47,6 +50,12 @@ def load_config():
     merged = DEFAULT_CONFIG.copy()
     merged.update(data if isinstance(data, dict) else {})
     return merged
+
+
+def save_config(config: dict):
+    """Persist config to disk, keeping only keys that differ from defaults."""
+    with CONFIG_FILE.open('w', encoding='utf-8') as f:
+        json.dump(config, f, ensure_ascii=False, indent=2)
 
 
 CONFIG = load_config()
@@ -176,7 +185,7 @@ def bootstrap_test_stage_data():
         return
 
     bootstrap_run_id = CONFIG.get('bootstrap_run_id') or CONFIG.get('run_id') or 'test_run_001'
-    bootstrap_organ = CONFIG.get('bootstrap_organ') or '鑲捐剰'
+    bootstrap_organ = CONFIG.get('bootstrap_organ') or '肾脏'
     bootstrap_data_root = CONFIG.get('data_root') or 'Test'
 
     try:
@@ -826,6 +835,116 @@ def get_task_asset(task_id, kind):
     abort(404)
 
 
+# ── echobox integration ────────────────────────────────────────────
+
+
+def _echobox_api(method: str, path: str, body: dict | None = None) -> tuple:
+    """Call echobox REST API. Returns (status_code, response_json_dict)."""
+    import urllib.request
+
+    url = f"{CONFIG.get('echobox_app_url', 'http://127.0.0.1:8000')}{path}"
+    data = None
+    if body is not None:
+        data = json.dumps(body).encode('utf-8')
+    req = urllib.request.Request(url, data=data, method=method)
+    req.add_header('Content-Type', 'application/json')
+    try:
+        with urllib.request.urlopen(req, timeout=30) as resp:
+            payload = json.loads(resp.read().decode('utf-8'))
+            return resp.status, payload
+    except urllib.error.HTTPError as exc:
+        try:
+            detail = json.loads(exc.read().decode('utf-8'))
+        except Exception:
+            detail = {'error': exc.reason}
+        return exc.code, detail
+    except Exception as exc:
+        return 0, {'error': str(exc)}
+
+
+_echobox_image_cache: dict[str, int] = {}
+
+
+@app.route('/task/<task_id>/echobox-mapping', methods=['GET'])
+def echobox_mapping(task_id):
+    """Return {project_id, image_id} so the frontend can load the echobox iframe."""
+    task = find_task(task_id)
+    if not task:
+        abort(404)
+
+    project_id = CONFIG.get('echobox_project_id')
+    if not project_id:
+        return jsonify({'error': 'echobox project not set up yet'}), 503
+
+    image_path = task.get('image_path', '')
+    if not image_path:
+        return jsonify({'error': 'task has no image_path'}), 400
+
+    cache_key = f"{project_id}:{image_path}"
+    if cache_key in _echobox_image_cache:
+        return jsonify({'project_id': project_id, 'image_id': _echobox_image_cache[cache_key]})
+
+    norm = image_path.replace('\\', '/')
+    code, payload = _echobox_api('GET', f'/api/projects/{project_id}/lookup-by-path?abs_path={norm}')
+    if code == 200 and payload.get('image_id'):
+        _echobox_image_cache[cache_key] = payload['image_id']
+        return jsonify({'project_id': project_id, 'image_id': payload['image_id']})
+
+    return jsonify({'project_id': project_id, 'image_id': None, 'error': 'image not in echobox index'})
+
+
+@app.route('/admin/setup-echobox', methods=['POST'])
+def setup_echobox():
+    """Create an echobox project for the current MedRev run."""
+    role = session.get('role')
+    if role != 'admin':
+        return jsonify({'error': 'admin required'}), 403
+
+    data_root = CONFIG.get('data_root', 'Test')
+    abs_root = str((ROOT / data_root).resolve())
+
+    # 1. create project
+    code, proj = _echobox_api('POST', '/api/projects', {
+        'source_folder': abs_root,
+        'name': f'MedRev-{RUN_ID}',
+        'initial_labels': [],
+        'train_val_test': [1.0, 0.0, 0.0],
+        'export_format': 'coco',
+    })
+    if code not in (200, 201) or not proj.get('id'):
+        return jsonify({'error': 'failed to create echobox project', 'detail': proj}), 500
+
+    project_id = proj['id']
+
+    # 2. finalize (scans images)
+    code, _ = _echobox_api('POST', f'/api/projects/{project_id}/finalize')
+    if code not in (200, 201, 204):
+        return jsonify({'error': 'echobox finalize failed'}), 500
+
+    # 3. persist
+    CONFIG['echobox_project_id'] = project_id
+    CONFIG['echobox_data_dir'] = abs_root
+    save_config(CONFIG)
+    _echobox_image_cache.clear()
+
+    return jsonify({'status': 'ok', 'project_id': project_id, 'data_dir': abs_root})
+
+
+@app.route('/admin/echobox-status', methods=['GET'])
+def echobox_status():
+    """Check whether echobox is running and a project exists for this run."""
+    project_id = CONFIG.get('echobox_project_id')
+    healthy = False
+    if project_id:
+        code, _ = _echobox_api('GET', f'/api/projects/{project_id}')
+        healthy = code == 200
+    return jsonify({
+        'echobox_project_id': project_id,
+        'echobox_healthy': healthy,
+        'echobox_app_url': CONFIG.get('echobox_app_url', 'http://127.0.0.1:8000'),
+    })
+
+
 @app.route('/review', methods=['POST'])
 def post_review():
     data = request.get_json(force=True)
@@ -841,6 +960,11 @@ def post_review():
     data['reviewer_id'] = user
     if data['task_id'] in get_exported_task_ids():
         return jsonify({'error': 'task already exported'}), 409
+
+    # serialize annotations from echobox if present
+    annotations = data.pop('annotations', None)
+    if annotations and isinstance(annotations, list):
+        data['annotation_json'] = json.dumps(annotations, ensure_ascii=False)
 
     # Save to database first, then mirror to JSONL so a failure can be reported cleanly.
     if not db.append_review(data):
@@ -1333,7 +1457,7 @@ def login():
         return render_template(
             'login.html',
             next_url=request.args.get('next', ''),
-            error='璇蜂娇鐢ㄧ鐞嗗憳璐﹀彿鐧诲綍' if request.args.get('msg') == 'admin_required' else None,
+            error='请使用管理员账号登录' if request.args.get('msg') == 'admin_required' else None,
         )
     # POST
     payload = request.get_json(silent=True) or {}
@@ -1360,7 +1484,7 @@ def logout():
 
 
 if __name__ == '__main__':
-    app.run(port=5000)
+    app.run(port=8080)
 
 
 

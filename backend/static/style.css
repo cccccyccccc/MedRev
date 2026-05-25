@@ -412,6 +412,15 @@ a {
     background: #fff;
 }
 
+.iframe-container {
+    width: 100%;
+    min-height: 360px;
+    height: 500px;
+    border-radius: 14px;
+    overflow: hidden;
+    background: #0b1324;
+}
+
 .image-fallback {
     position: absolute;
     inset: 0;

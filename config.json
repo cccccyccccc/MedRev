@@ -8,5 +8,8 @@
   "conf_threshold": 0.7,
   "iou_threshold": 0.5,
   "hard_sample_mode": "strict",
-  "auto_export": true
+  "auto_export": true,
+  "echobox_project_id": null,
+  "echobox_data_dir": null,
+  "echobox_app_url": "http://127.0.0.1:8000"
 }

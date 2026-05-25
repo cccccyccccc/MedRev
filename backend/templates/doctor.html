@@ -141,6 +141,24 @@
                         </div>
                     </article>
 
+                    <article class="card image-card" id="annotationCard" hidden>
+                        <div class="card-head">
+                            <div>
+                                <div class="section-label">手动标注</div>
+                                <h3>修正伪标签 (Echobox)</h3>
+                            </div>
+                            <span id="annotationStatus" style="font-size:12px;color:var(--muted)"></span>
+                        </div>
+                        <div class="iframe-container">
+                            <iframe id="echoboxIframe"
+                                    src=""
+                                    style="width:100%;height:100%;border:none;border-radius:12px;"
+                                    allow="clipboard-write"
+                                    sandbox="allow-scripts allow-same-origin allow-forms">
+                            </iframe>
+                        </div>
+                    </article>
+
                     <article class="card image-card" id="predCard">
                         <div class="card-head">
                             <div>
@@ -239,6 +257,9 @@
         const hardActions = document.getElementById('hardActions')
         const pseudoActions = document.getElementById('pseudoActions')
         const reviewNotice = document.getElementById('reviewNotice')
+        const annotationCard = document.getElementById('annotationCard')
+        const echoboxIframe = document.getElementById('echoboxIframe')
+        const annotationStatus = document.getElementById('annotationStatus')
         const reportControls = document.getElementById('reportControls')
         const reportPrev = document.getElementById('reportPrev')
         const reportNext = document.getElementById('reportNext')
@@ -562,9 +583,11 @@
 
             hardActions.hidden = type !== 'hard'
             pseudoActions.hidden = type !== 'pseudo'
+            gtCard.hidden = type !== 'hard'
+            annotationCard.hidden = type !== 'pseudo'
 
             const hasCurrentImage = Boolean(currentTask.image_path)
-            const hasGtInfo = type !== 'hard' || (currentTask.gt_annotation || []).length > 0
+            const hasGtInfo = (currentTask.gt_annotation || []).length > 0
             const predKey = type === 'hard' ? 'model_prediction' : 'pseudo_label_prediction'
             const hasPredInfo = Object.prototype.hasOwnProperty.call(currentTask, predKey)
             const predAnnotations = hasPredInfo ? (currentTask[predKey] || []) : []
@@ -589,6 +612,9 @@
             }
 
             renderRelatedImages(currentTask)
+            if (type === 'pseudo') {
+                loadAnnotationIframe(currentTask)
+            }
             taskDirectory.querySelectorAll('.task-directory-item').forEach((button) => {
                 button.classList.toggle('active', button.dataset.taskId === currentTask.task_id)
             })
@@ -750,6 +776,41 @@
             })
         }
 
+        async function loadAnnotationIframe(task) {
+            if (!task || !task.task_id) return
+            try {
+                const res = await fetch(`/task/${encodeURIComponent(task.task_id)}/echobox-mapping`)
+                const mapping = await res.json()
+                if (!mapping.project_id || !mapping.image_id) {
+                    annotationStatus.textContent = '标注服务未就绪'
+                    return
+                }
+                const iframeSrc = `http://127.0.0.1:5173/annotate?project_id=${mapping.project_id}&embed=1&image_id=${mapping.image_id}`
+                if (echoboxIframe.src !== iframeSrc) {
+                    echoboxIframe.src = iframeSrc
+                }
+                annotationStatus.textContent = `项目 #${mapping.project_id} · 图片 #${mapping.image_id}`
+            } catch (e) {
+                annotationStatus.textContent = '标注服务连接失败'
+            }
+        }
+
+        function collectAnnotations() {
+            return new Promise((resolve) => {
+                if (!echoboxIframe.contentWindow) return resolve([])
+                const timeout = setTimeout(() => resolve([]), 3000)
+                const handler = (event) => {
+                    if (event.data && event.data.type === 'ANNOTATION_DATA') {
+                        clearTimeout(timeout)
+                        window.removeEventListener('message', handler)
+                        resolve(event.data.payload || [])
+                    }
+                }
+                window.addEventListener('message', handler)
+                echoboxIframe.contentWindow.postMessage({ type: 'GET_ANNOTATIONS', payload: {} }, '*')
+            })
+        }
+
         async function submitReview(result, errorType = null) {
             if (!currentTask) return
             const payload = {
@@ -763,6 +824,14 @@
                 error_type: errorType,
                 reviewer_id: reviewerId,
                 submitted_at: new Date().toISOString()
+            }
+
+            // collect echobox annotations for pseudo_label_error
+            if (result === 'pseudo_label_error') {
+                const annotations = await collectAnnotations()
+                if (annotations.length > 0) {
+                    payload.annotations = annotations
+                }
             }
 
             try {
