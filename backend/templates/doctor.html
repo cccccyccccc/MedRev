@@ -294,8 +294,12 @@
             return `/task/${encodeURIComponent(taskId)}/asset/${kind}${query}`
         }
 
-        function showToast(message) {
+        function showToast(message, variant = 'success') {
             toastText.textContent = message
+            toast.classList.remove('error')
+            if (variant === 'error') {
+                toast.classList.add('error')
+            }
             toast.hidden = false
             toast.classList.add('show')
             window.clearTimeout(toastTimer)
@@ -304,7 +308,7 @@
                 window.setTimeout(() => {
                     toast.hidden = true
                 }, 220)
-            }, 1800)
+            }, 2400)
         }
 
         function bindPreview(frame, sourceGetter) {
@@ -563,6 +567,8 @@
             const hasGtInfo = type !== 'hard' || (currentTask.gt_annotation || []).length > 0
             const predKey = type === 'hard' ? 'model_prediction' : 'pseudo_label_prediction'
             const hasPredInfo = Object.prototype.hasOwnProperty.call(currentTask, predKey)
+            const predAnnotations = hasPredInfo ? (currentTask[predKey] || []) : []
+            const hasPredBoxes = predAnnotations.length > 0
 
             currentReportImages = currentTask.report_image_paths && currentTask.report_image_paths.length
                 ? currentTask.report_image_paths
@@ -571,7 +577,16 @@
             renderReportImage()
             setImageSource(currentImg, hasCurrentImage ? assetUrl(currentTask.task_id, 'current') : '')
             setImageSource(gtImg, hasGtInfo ? `/render?task_id=${encodeURIComponent(currentTask.task_id)}&show=gt` : '')
-            setImageSource(predImg, hasCurrentImage && hasPredInfo ? `/render?task_id=${encodeURIComponent(currentTask.task_id)}&show=pred` : '')
+            if (hasCurrentImage && hasPredBoxes) {
+                setImageSource(predImg, `/render?task_id=${encodeURIComponent(currentTask.task_id)}&show=pred`)
+                predTitle.textContent = type === 'hard' ? '模型预测展示图' : '模型伪标签展示图'
+            } else if (hasCurrentImage) {
+                setImageSource(predImg, assetUrl(currentTask.task_id, 'current'))
+                predTitle.textContent = '无预测框 · 展示原图'
+            } else {
+                setImageSource(predImg, '')
+                predTitle.textContent = type === 'hard' ? '模型预测展示图' : '模型伪标签展示图'
+            }
 
             renderRelatedImages(currentTask)
             taskDirectory.querySelectorAll('.task-directory-item').forEach((button) => {
@@ -622,7 +637,7 @@
         async function loadTaskById(taskId, type) {
             const res = await fetch(`/task/${encodeURIComponent(taskId)}`)
             if (!res.ok) {
-                alert('加载任务失败')
+                showToast('加载任务失败', 'error')
                 await loadTaskDirectory(type)
                 return
             }
@@ -653,49 +668,24 @@
             if (!res.ok) {
                 const payload = await res.json().catch(() => ({}))
                 if (skipCurrent && payload.error === 'no available task' && currentTask) {
+                    showToast('已是当前类型最后一个任务')
                     await loadTaskDirectory(type)
                     return
                 }
                 currentTask = null
                 taskArea.hidden = true
                 if (payload.error === 'no available task') {
+                    showToast('当前类型没有待审核任务')
                     await loadTaskDirectory(type)
                 } else {
-                    alert(payload.error || '加载任务失败')
+                    showToast(payload.error || '加载任务失败', 'error')
                 }
                 return
             }
             const task = await res.json()
 
             currentTask = task
-            taskArea.hidden = false
-            title.textContent = type === 'hard' ? '页面一 · 困难样本 GT 检查' : '页面二 · 无标注伪标签检查'
-            taskChip.textContent = type === 'hard' ? '页面一' : '页面二'
-            caseId.textContent = currentTask.case_id || '—'
-            imageName.textContent = currentTask.image_name || '—'
-            modelVersion.textContent = currentTask.model_version || '—'
-            modelConfidence.textContent = currentTask.model_confidence ?? '—'
-            taskIdText.textContent = currentTask.task_id || '—'
-            predTitle.textContent = type === 'hard' ? '模型预测展示图' : '模型伪标签展示图'
-
-            hardActions.hidden = type !== 'hard'
-            pseudoActions.hidden = type !== 'pseudo'
-
-            const hasCurrentImage = Boolean(currentTask.image_path)
-            const hasGtInfo = type !== 'hard' || (currentTask.gt_annotation || []).length > 0
-            const predKey = type === 'hard' ? 'model_prediction' : 'pseudo_label_prediction'
-            const hasPredInfo = Object.prototype.hasOwnProperty.call(currentTask, predKey)
-
-            currentReportImages = currentTask.report_image_paths && currentTask.report_image_paths.length
-                ? currentTask.report_image_paths
-                : (currentTask.report_image_path ? [currentTask.report_image_path] : [])
-            reportIndex = 0
-            renderReportImage()
-            setImageSource(currentImg, hasCurrentImage ? assetUrl(currentTask.task_id, 'current') : '')
-            setImageSource(gtImg, hasGtInfo ? `/render?task_id=${encodeURIComponent(currentTask.task_id)}&show=gt` : '')
-            setImageSource(predImg, hasCurrentImage && hasPredInfo ? `/render?task_id=${encodeURIComponent(currentTask.task_id)}&show=pred` : '')
-
-            renderRelatedImages(currentTask)
+            displayTask(task, type)
             await refreshRemainingStats(type)
             await loadTaskDirectory(type)
         }
@@ -788,9 +778,9 @@
                 }
 
                 const data = await r.json().catch(() => ({}))
-                alert(`保存失败，请重试：${data.error || '提交失败'}`)
+                showToast(`保存失败，请重试：${data.error || '提交失败'}`, 'error')
             } catch (error) {
-                alert(`保存失败，请重试：${error.message}`)
+                showToast(`保存失败，请重试：${error.message}`, 'error')
             }
         }
 
