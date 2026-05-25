@@ -334,7 +334,8 @@ def main():
     import argparse
     parser = argparse.ArgumentParser()
     parser.add_argument('--run-id', dest='run_id', default='test_run_001')
-    parser.add_argument('--organ', dest='organ', default='肾脏')
+    parser.add_argument('--organ', dest='organ', default='', help='Single organ (legacy), use --organs for multiple')
+    parser.add_argument('--organs', dest='organs', default='', help='Comma-separated list of organs, e.g. 肾脏,肝脏')
     parser.add_argument('--data-root', dest='data_root', default='test_data')
     parser.add_argument('--conf-threshold', dest='conf_threshold', type=float, default=0.85)
     parser.add_argument('--iou-threshold', dest='iou_threshold', type=float, default=0.5)
@@ -347,17 +348,19 @@ def main():
     )
     args = parser.parse_args()
 
+    # Resolve organ list: --organs takes priority over --organ
+    if args.organs:
+        organs = [o.strip() for o in args.organs.split(',') if o.strip()]
+    elif args.organ:
+        organs = [args.organ.strip()]
+    else:
+        raise SystemExit("请通过 --organ 或 --organs 指定至少一个器官")
+
     base = Path.cwd()
     data_root = Path(args.data_root)
     if not data_root.is_absolute():
         data_root = (base / data_root).resolve()
     test_data = data_root
-    organ = args.organ
-    organ_dir = test_data / "整理后标注目录" / organ
-    if not organ_dir.exists():
-        raise SystemExit(f"organ data path not found: {organ_dir}")
-    gt_map, pred_map, organ_map, organ_has_filter = load_gt_pred_organ(organ_dir, test_data)
-    case_metadata = load_case_metadata(organ_dir)
 
     run_id = args.run_id
     tasks_dir = base / "tasks"
@@ -368,46 +371,104 @@ def main():
     conf_thresh = args.conf_threshold
     iou_thresh = args.iou_threshold
 
-    hard_tasks: List[Dict] = []
-    pseudo_tasks: List[Dict] = []
+    all_hard_tasks: List[Dict] = []
+    all_pseudo_tasks: List[Dict] = []
 
-    # PAGE 1: iterate GT images
-    for image_key, gt_entry in gt_map.items():
-        pred_entry = pred_map.get(image_key)
-        image_name = gt_entry.get('image_name') or Path(image_key).name
-        image_path = gt_entry.get('image_path') or find_image_path(test_data, image_name, gt_entry.get("image_relpath", ""))
-        image_meta = gt_entry.get("image", {})
-        case_info = case_info_for(image_meta, case_metadata)
-        case_id = case_info.get("case_id") or (Path(image_path).parent.name if image_path else "")
-        report_image, report_images, related = related_images_for(image_path, image_name, test_data, image_meta, case_metadata)
+    for organ in organs:
+        organ_dir = test_data / "整理后标注目录" / organ
+        if not organ_dir.exists():
+            print(f"Warning: organ data path not found, skipping: {organ_dir}")
+            continue
 
-        if not pred_entry:
-            pred_entry = {
-                "image_name": image_name,
-                "predictions": [],
-                "model_version": None,
-            }
+        gt_map, pred_map, organ_map, organ_has_filter = load_gt_pred_organ(organ_dir, test_data)
+        case_metadata = load_case_metadata(organ_dir)
 
-        gt_annos = gt_entry.get('annotations', [])
-        preds = pred_entry.get('predictions', [])
-        max_conf = max((p.get('confidence', 0.0) for p in preds), default=0.0)
-        is_fully_correct, hard_reasons, qualified_preds = evaluate_gt_prediction(
-            gt_annos,
-            preds,
-            iou_thresh,
-        )
+        hard_tasks: List[Dict] = []
+        pseudo_tasks: List[Dict] = []
 
-        include_for_ui_test = (
-            args.hard_sample_mode == 'all_pred'
-            and preds
-            and max_conf >= conf_thresh
-        )
+        # PAGE 1: iterate GT images
+        for image_key, gt_entry in gt_map.items():
+            pred_entry = pred_map.get(image_key)
+            image_name = gt_entry.get('image_name') or Path(image_key).name
+            image_path = gt_entry.get('image_path') or find_image_path(test_data, image_name, gt_entry.get("image_relpath", ""))
+            image_meta = gt_entry.get("image", {})
+            case_info = case_info_for(image_meta, case_metadata)
+            case_id = case_info.get("case_id") or (Path(image_path).parent.name if image_path else "")
+            report_image, report_images, related = related_images_for(image_path, image_name, test_data, image_meta, case_metadata)
 
-        if (not is_fully_correct) or include_for_ui_test:
-            model_version = pred_entry.get('model_version')
+            if not pred_entry:
+                pred_entry = {
+                    "image_name": image_name,
+                    "predictions": [],
+                    "model_version": None,
+                }
+
+            gt_annos = gt_entry.get('annotations', [])
+            preds = pred_entry.get('predictions', [])
+            max_conf = max((p.get('confidence', 0.0) for p in preds), default=0.0)
+            is_fully_correct, hard_reasons, qualified_preds = evaluate_gt_prediction(
+                gt_annos,
+                preds,
+                iou_thresh,
+            )
+
+            include_for_ui_test = (
+                args.hard_sample_mode == 'all_pred'
+                and preds
+                and max_conf >= conf_thresh
+            )
+
+            if (not is_fully_correct) or include_for_ui_test:
+                model_version = pred_entry.get('model_version')
+                task = {
+                    "run_id": run_id,
+                    "task_id": f"{run_id}_{stable_task_suffix('hard', image_meta, image_name)}",
+                    "case_id": case_id,
+                    "organ": organ,
+                    "diagnosis": case_info.get("diagnosis", ""),
+                    "age_group": case_info.get("age_group", ""),
+                    "gender": case_info.get("gender", ""),
+                    "image_name": image_name,
+                    "image_path": image_path,
+                    "report_image_path": str((Path(image_path).parent / '病例报告.jpg').as_posix()) if image_path else "",
+                    "report_image_paths": report_images,
+                    "related_images": related,
+                    "gt_annotation": gt_annos,
+                    "model_prediction": preds,
+                    "hard_sample_reasons": hard_reasons,
+                    "qualified_prediction_count": len(qualified_preds),
+                    "model_version": model_version,
+                    "model_confidence": max_conf,
+                    "image_width": gt_entry.get("image_width", 0),
+                    "image_height": gt_entry.get("image_height", 0),
+                    "image_relpath": gt_entry.get("image_relpath", image_key),
+                    "case_relpath": gt_entry.get("case_relpath", ""),
+                }
+                task["report_image_path"] = report_image
+                hard_tasks.append(task)
+
+        # PAGE 2: unlabeled images with preds
+        gt_names = set(gt_map.keys())
+        for image_key, pred_entry in pred_map.items():
+            if image_key in gt_names:
+                continue
+            preds = pred_entry.get('predictions', [])
+            if not preds:
+                continue
+            organ_info = organ_map.get(image_key)
+            if organ_has_filter and (organ_info is None or not organ_info.get('organ_present', False)):
+                continue
+
+            image_name = pred_entry.get('image_name') or Path(image_key).name
+            image_meta = pred_entry.get("image", {})
+            image_path = pred_entry.get('image_path') or find_image_path(test_data, image_name, pred_entry.get("image_relpath", ""))
+            case_info = case_info_for(image_meta, case_metadata)
+            case_id = case_info.get("case_id") or (Path(image_path).parent.name if image_path else "")
+            report_image, report_images, related = related_images_for(image_path, image_name, test_data, image_meta, case_metadata)
+
             task = {
                 "run_id": run_id,
-                "task_id": f"{run_id}_{stable_task_suffix('hard', image_meta, image_name)}",
+                "task_id": f"{run_id}_{stable_task_suffix('pseudo', image_meta, image_name)}",
                 "case_id": case_id,
                 "organ": organ,
                 "diagnosis": case_info.get("diagnosis", ""),
@@ -415,78 +476,34 @@ def main():
                 "gender": case_info.get("gender", ""),
                 "image_name": image_name,
                 "image_path": image_path,
-                "report_image_path": str((Path(image_path).parent / '病例报告.jpg').as_posix()) if image_path else "",
+                "report_image_path": report_image,
                 "report_image_paths": report_images,
                 "related_images": related,
-                "gt_annotation": gt_annos,
-                "model_prediction": preds,
-                "hard_sample_reasons": hard_reasons,
-                "qualified_prediction_count": len(qualified_preds),
-                "model_version": model_version,
-                "model_confidence": max_conf,
-                "image_width": gt_entry.get("image_width", 0),
-                "image_height": gt_entry.get("image_height", 0),
-                "image_relpath": gt_entry.get("image_relpath", image_key),
-                "case_relpath": gt_entry.get("case_relpath", ""),
+                "pseudo_label_prediction": preds,
+                "model_version": pred_entry.get('model_version'),
+                "model_confidence": max((p.get('confidence', 0.0) for p in preds), default=0.0),
+                "image_width": pred_entry.get("image_width", 0),
+                "image_height": pred_entry.get("image_height", 0),
+                "image_relpath": pred_entry.get("image_relpath", image_key),
+                "case_relpath": pred_entry.get("case_relpath", ""),
             }
-            task["report_image_path"] = report_image
-            hard_tasks.append(task)
+            pseudo_tasks.append(task)
 
-    # PAGE 2: unlabeled images with preds
-    # collect GT image names
-    gt_names = set(gt_map.keys())
-    for image_key, pred_entry in pred_map.items():
-        if image_key in gt_names:
-            continue
-        preds = pred_entry.get('predictions', [])
-        if not preds:
-            continue
-        # organ filter: if organ_map empty => skip filter; else require organ_present true
-        organ_info = organ_map.get(image_key)
-        if organ_has_filter and (organ_info is None or not organ_info.get('organ_present', False)):
-            continue
+        print(f"[{organ}] Hard tasks: {len(hard_tasks)}, Pseudo tasks: {len(pseudo_tasks)}")
+        all_hard_tasks.extend(hard_tasks)
+        all_pseudo_tasks.extend(pseudo_tasks)
 
-        image_name = pred_entry.get('image_name') or Path(image_key).name
-        image_meta = pred_entry.get("image", {})
-        image_path = pred_entry.get('image_path') or find_image_path(test_data, image_name, pred_entry.get("image_relpath", ""))
-        case_info = case_info_for(image_meta, case_metadata)
-        case_id = case_info.get("case_id") or (Path(image_path).parent.name if image_path else "")
-        report_image, report_images, related = related_images_for(image_path, image_name, test_data, image_meta, case_metadata)
-
-        task = {
-            "run_id": run_id,
-            "task_id": f"{run_id}_{stable_task_suffix('pseudo', image_meta, image_name)}",
-            "case_id": case_id,
-            "organ": organ,
-            "diagnosis": case_info.get("diagnosis", ""),
-            "age_group": case_info.get("age_group", ""),
-            "gender": case_info.get("gender", ""),
-            "image_name": image_name,
-            "image_path": image_path,
-            "report_image_path": report_image,
-            "report_image_paths": report_images,
-            "related_images": related,
-            "pseudo_label_prediction": preds,
-            "model_version": pred_entry.get('model_version'),
-            "model_confidence": max((p.get('confidence', 0.0) for p in preds), default=0.0),
-            "image_width": pred_entry.get("image_width", 0),
-            "image_height": pred_entry.get("image_height", 0),
-            "image_relpath": pred_entry.get("image_relpath", image_key),
-            "case_relpath": pred_entry.get("case_relpath", ""),
-        }
-        pseudo_tasks.append(task)
-
-    # write JSONL files (overwrite)
+    # write JSONL files (overwrite with all organs merged)
     with hard_path.open('w', encoding='utf-8') as f:
-        for t in hard_tasks:
+        for t in all_hard_tasks:
             f.write(json.dumps(t, ensure_ascii=False) + "\n")
 
     with pseudo_path.open('w', encoding='utf-8') as f:
-        for t in pseudo_tasks:
+        for t in all_pseudo_tasks:
             f.write(json.dumps(t, ensure_ascii=False) + "\n")
 
-    print(f"Wrote {len(hard_tasks)} hard tasks to {hard_path}")
-    print(f"Wrote {len(pseudo_tasks)} pseudo tasks to {pseudo_path}")
+    print(f"Total: {len(all_hard_tasks)} hard tasks -> {hard_path}")
+    print(f"Total: {len(all_pseudo_tasks)} pseudo tasks -> {pseudo_path}")
 
 
 if __name__ == '__main__':

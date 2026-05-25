@@ -366,13 +366,18 @@
             </div>
             <div class="card-body">
                 <div class="field">
-                    <label>器官</label>
-                    <select id="generateOrgan">
-                        <option value="">-- 选择器官 --</option>
-                        <option value="肾脏">肾脏</option>
-                        <option value="肝脏">肝脏</option>
-                        <option value="胰腺">胰腺</option>
-                    </select>
+                    <label>器官（可多选）</label>
+                    <div class="organ-checkbox-group" style="display:flex;flex-wrap:wrap;gap:10px;padding:4px 0;">
+                        <label style="display:flex;align-items:center;gap:6px;cursor:pointer;color:var(--text);font-size:14px;">
+                            <input type="checkbox" value="肾脏" class="organ-check" checked style="accent-color:#6ee7ff;"> 肾脏
+                        </label>
+                        <label style="display:flex;align-items:center;gap:6px;cursor:pointer;color:var(--text);font-size:14px;">
+                            <input type="checkbox" value="肝脏" class="organ-check" style="accent-color:#6ee7ff;"> 肝脏
+                        </label>
+                        <label style="display:flex;align-items:center;gap:6px;cursor:pointer;color:var(--text);font-size:14px;">
+                            <input type="checkbox" value="胰腺" class="organ-check" style="accent-color:#6ee7ff;"> 胰腺
+                        </label>
+                    </div>
                 </div>
                 <div class="field">
                     <label>模型版本 (model_version)</label>
@@ -520,12 +525,12 @@
         }
 
         async function generateNewRun() {
-            const organ = el('generateOrgan').value
+            const organs = [...document.querySelectorAll('.organ-check:checked')].map(cb => cb.value)
             const modelVersion = el('generateModelVersion').value
             const dataVersion = el('generateDataVersion').value
             const dataRoot = el('generateDataRoot').value
 
-            if (!organ) return alert('请选择器官')
+            if (!organs.length) return alert('请至少选择一个器官')
             if (!modelVersion) return alert('请输入模型版本')
             if (!dataVersion) return alert('请输入数据版本')
             if (!dataRoot) return alert('请输入本地数据根目录')
@@ -542,7 +547,7 @@
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify({
-                        organ,
+                        organs,
                         model_version: modelVersion,
                         data_version: dataVersion,
                         data_root: dataRoot,
