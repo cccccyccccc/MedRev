@@ -412,15 +412,6 @@ a {
     background: #fff;
 }
 
-.iframe-container {
-    width: 100%;
-    min-height: 360px;
-    height: 500px;
-    border-radius: 14px;
-    overflow: hidden;
-    background: #0b1324;
-}
-
 .image-fallback {
     position: absolute;
     inset: 0;
@@ -489,9 +480,24 @@ a {
     font-size: 15px;
 }
 
+.annotation-card {
+    display: grid;
+    gap: 12px;
+    margin-bottom: 18px;
+}
+
+.annotation-frame {
+    width: 100%;
+    min-height: 480px;
+    height: 620px;
+    border-radius: 14px;
+    overflow: hidden;
+    background: #0b1324;
+}
+
 .image-grid {
     display: grid;
-    grid-template-columns: repeat(3, minmax(0, 1fr));
+    grid-template-columns: repeat(auto-fill, minmax(380px, 1fr));
     gap: 18px;
 }
 
@@ -847,8 +853,10 @@ a {
     }
 
     .image-card .image-frame,
-    .large-frame {
+    .large-frame,
+    .annotation-frame {
         min-height: 250px;
+        height: auto;
     }
 
     .carousel-frame {
