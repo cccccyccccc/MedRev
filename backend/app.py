@@ -1128,6 +1128,35 @@ def admin_summary():
     return jsonify(summarize_reviews())
 
 
+@app.route('/admin/export/history', methods=['GET'])
+def admin_export_history():
+    user = session.get('user')
+    role = session.get('role')
+    if not user or role != 'admin':
+        return jsonify({'error': 'forbidden'}), 403
+    exports_dir = REVIEW_DIR / 'exports'
+    batches = []
+    if exports_dir.exists():
+        for batch_dir in sorted(exports_dir.iterdir(), reverse=True):
+            if batch_dir.is_dir():
+                summary_file = batch_dir / 'summary.json'
+                summary = {}
+                if summary_file.exists():
+                    try:
+                        summary = json.loads(summary_file.read_text(encoding='utf-8'))
+                    except Exception:
+                        pass
+                batches.append({
+                    'batch_id': batch_dir.name,
+                    'exported_at': summary.get('exported_at', ''),
+                    'exported_task_count': summary.get('total_reviewed', 0),
+                    'gt_error_count': summary.get('gt_error_count', 0),
+                    'accepted_pseudo_label_count': summary.get('accepted_pseudo_label_count', 0),
+                    'pseudo_label_error_count': summary.get('pseudo_label_error_count', 0),
+                })
+    return jsonify({'batches': batches})
+
+
 @app.route('/admin/export', methods=['POST'])
 def admin_export():
     user = session.get('user')
@@ -1172,10 +1201,8 @@ def admin_assign():
             blocked.append({'task_id': tid, 'reason': 'exported', 'assigned_to': assignments.get(tid)})
         elif tid in reviewed:
             blocked.append({'task_id': tid, 'reason': 'reviewed', 'assigned_to': assignments.get(tid)})
-        elif tid in assignments:
-            blocked.append({'task_id': tid, 'reason': 'assigned', 'assigned_to': assignments.get(tid)})
     if blocked:
-        return jsonify({'error': 'some tasks cannot be reassigned', 'blocked': blocked}), 409
+        return jsonify({'error': '已审核或已导出的任务不能重新分配', 'blocked': blocked}), 409
     for tid in task_ids:
         assignments[tid] = assignee
     save_assignments(assignments)
@@ -1262,6 +1289,16 @@ def admin_unassign():
     task_ids = payload.get('task_ids') or []
     if not task_ids:
         return jsonify({'error': 'missing fields'}), 400
+    reviewed = get_reviewed_task_ids()
+    exported = get_exported_task_ids()
+    blocked = []
+    for tid in task_ids:
+        if tid in exported:
+            blocked.append({'task_id': tid, 'reason': 'exported'})
+        elif tid in reviewed:
+            blocked.append({'task_id': tid, 'reason': 'reviewed'})
+    if blocked:
+        return jsonify({'error': '已审核或已导出的任务不能取消分配', 'blocked': blocked}), 409
     assignments = load_assignments()
     for tid in task_ids:
         if tid in assignments:

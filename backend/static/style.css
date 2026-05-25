@@ -660,6 +660,12 @@ a {
     transform: translate(-50%, 0);
 }
 
+.toast.error {
+    color: #a92f45;
+    background: #fce4ec;
+    border-color: rgba(217, 72, 95, 0.24);
+}
+
 .toast-icon {
     display: inline-grid;
     place-items: center;
@@ -668,6 +674,10 @@ a {
     border-radius: 50%;
     color: #fff;
     background: var(--success);
+}
+
+.toast.error .toast-icon {
+    background: var(--danger);
 }
 
 .preview-modal {

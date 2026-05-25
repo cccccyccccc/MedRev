@@ -2,6 +2,7 @@ import argparse
 import json
 import sys
 from collections import Counter, defaultdict
+from datetime import datetime
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -32,12 +33,6 @@ CONFIG = load_config()
 RUN_ID = CONFIG['run_id']
 TASKS_DIR = ROOT / 'tasks'
 REVIEW_DIR = ROOT / 'review_outputs' / RUN_ID
-RAW_REVIEWS = REVIEW_DIR / 'raw_reviews.jsonl'
-GT_ISSUE_LIST = REVIEW_DIR / 'gt_issue_list.jsonl'
-ACCEPTED_PSEUDO_LABELS = REVIEW_DIR / 'accepted_pseudo_labels.jsonl'
-ACCEPTED_PSEUDO_LABELS_COCO = REVIEW_DIR / 'accepted_pseudo_labels.coco.json'
-PSEUDO_LABEL_ERROR_LIST = REVIEW_DIR / 'pseudo_label_error_list.jsonl'
-SUMMARY_FILE = REVIEW_DIR / 'summary.json'
 
 
 TASK_FILES = [TASKS_DIR / 'hard_sample_gt_review.jsonl', TASKS_DIR / 'pseudo_label_review.jsonl']
@@ -120,19 +115,32 @@ def export_results(run_id: str):
         task_rows.extend(read_jsonl(task_file))
     task_map = {row['task_id']: row for row in task_rows if row.get('task_id')}
 
-    # Read reviews from database instead of JSONL file
     raw_reviews = db.get_reviews_for_run(run_id)
-    # Convert sqlite3.Row objects to dicts
     raw_reviews = [dict(r) if hasattr(r, 'keys') else r for r in raw_reviews]
+
+    # Filter out already-exported tasks for incremental export
+    exported = db.get_exported_tasks_for_run(run_id)
+    raw_reviews = [r for r in raw_reviews if r.get('task_id') not in exported]
+
+    if not raw_reviews:
+        return {'run_id': run_id, 'total_reviewed': 0, 'message': '没有新增的审核结果需要导出'}
+
+    # Create timestamped batch directory for this export
+    batch_id = datetime.now().strftime('export_%Y%m%d_%H%M%S')
+    export_dir = REVIEW_DIR / 'exports' / batch_id
 
     gt_issue_rows = []
     accepted_rows = []
     pseudo_error_rows = []
     error_counter = Counter()
+    exported_task_ids = []
 
     for row in raw_reviews:
         task = task_map.get(row.get('task_id'), {})
         review_result = row.get('review_result')
+        task_id = row.get('task_id')
+        if task_id:
+            exported_task_ids.append(task_id)
         if review_result == 'gt_error':
             gt_issue_rows.append({
                 'run_id': row.get('run_id'),
@@ -165,6 +173,8 @@ def export_results(run_id: str):
 
     summary = {
         'run_id': run_id,
+        'export_batch_id': batch_id,
+        'exported_at': datetime.now().isoformat(timespec='seconds'),
         'total_reviewed': len(raw_reviews),
         'gt_error_count': len(gt_issue_rows),
         'accepted_pseudo_label_count': len(accepted_rows),
@@ -177,16 +187,25 @@ def export_results(run_id: str):
         },
     }
 
-    write_jsonl(GT_ISSUE_LIST, gt_issue_rows)
-    write_jsonl(ACCEPTED_PSEUDO_LABELS, accepted_rows)
-    write_jsonl(PSEUDO_LABEL_ERROR_LIST, pseudo_error_rows)
-    ACCEPTED_PSEUDO_LABELS_COCO.write_text(json.dumps(build_coco_from_accepted(accepted_rows, task_map), ensure_ascii=False, indent=2), encoding='utf-8')
-    SUMMARY_FILE.write_text(json.dumps(summary, ensure_ascii=False, indent=2), encoding='utf-8')
+    # Write to batch-specific directory
+    write_jsonl(export_dir / 'raw_reviews.jsonl', raw_reviews)
+    write_jsonl(export_dir / 'gt_issue_list.jsonl', gt_issue_rows)
+    write_jsonl(export_dir / 'accepted_pseudo_labels.jsonl', accepted_rows)
+    write_jsonl(export_dir / 'pseudo_label_error_list.jsonl', pseudo_error_rows)
+    (export_dir / 'accepted_pseudo_labels.coco.json').write_text(
+        json.dumps(build_coco_from_accepted(accepted_rows, task_map), ensure_ascii=False, indent=2),
+        encoding='utf-8')
+    (export_dir / 'summary.json').write_text(json.dumps(summary, ensure_ascii=False, indent=2), encoding='utf-8')
+
+    # Mark tasks as exported in the database
+    if exported_task_ids:
+        db.mark_tasks_exported(run_id, exported_task_ids, batch_id)
+
     return summary
 
 
 def main():
-    parser = argparse.ArgumentParser(description='Export MedRev review outputs')
+    parser = argparse.ArgumentParser(description='Export MedRev review outputs (incremental)')
     parser.add_argument('--run-id', default=CONFIG['run_id'])
     args = parser.parse_args()
     summary = export_results(args.run_id)

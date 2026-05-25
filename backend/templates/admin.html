@@ -809,6 +809,11 @@
                         </div>
                         <div style="height:12px"></div>
                         <div class="list" id="exportResultList"></div>
+                        <div style="height:8px"></div>
+                        <div class="card-subtitle" style="margin-bottom:8px;">导出历史</div>
+                        <div class="list" id="exportHistoryList">
+                            <div class="list-item"><div class="list-item-title" style="color:var(--muted)">加载中...</div></div>
+                        </div>
                     </div>
                 </div>
             </div>
@@ -1069,7 +1074,7 @@
             el('taskTableBody').innerHTML = list.length
                 ? list.map((task) => {
                     const taskStatus = effectiveTaskStatus(task, reviewedIds)
-                    const isLocked = taskStatus !== 'unassigned'
+                    const isLocked = taskStatus === 'reviewed' || taskStatus === 'exported'
                     const statusPerson = taskStatus === 'reviewed' ? (task.reviewed_by || task.assigned_to || '') : (task.assigned_to || '')
                     return `
                     <tr class="selectable-row${isLocked ? ' is-locked' : ''}">
@@ -1143,7 +1148,7 @@
                 const payload = await res.json().catch(() => ({}))
                 if (res.status === 409) {
                     await reloadDashboard(true)
-                    return alert('部分任务已分配或已审核，不能再次分配。列表已刷新。')
+                    return alert('已审核或已导出的任务不能重新分配。列表已刷新。')
                 }
                 return alert(payload.error || '分配失败')
             }
@@ -1158,7 +1163,14 @@
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({ task_ids: taskIds })
             })
-            if (!res.ok) return alert('取消分配失败')
+            if (!res.ok) {
+                const payload = await res.json().catch(() => ({}))
+                if (res.status === 409) {
+                    await reloadDashboard(true)
+                    return alert(payload.error || '部分任务无法取消分配。列表已刷新。')
+                }
+                return alert(payload.error || '取消分配失败')
+            }
             await reloadDashboard(true)
         }
 
@@ -1195,6 +1207,31 @@
             }
         }
 
+        async function loadExportHistory() {
+            try {
+                const res = await fetch('/admin/export/history')
+                const data = await res.json()
+                const batches = data.batches || []
+                if (!batches.length) {
+                    el('exportHistoryList').innerHTML = '<div class="list-item"><div class="list-item-title" style="color:var(--muted)">暂无导出记录</div></div>'
+                    return
+                }
+                el('exportHistoryList').innerHTML = batches.map(b => `
+                    <div class="list-item">
+                        <div class="list-item-head">
+                            <div class="list-item-title">${b.batch_id}</div>
+                            <div class="pill accent">${b.exported_task_count} 条</div>
+                        </div>
+                        <div class="list-item-meta">
+                            ${b.exported_at || ''} · GT问题 ${b.gt_error_count} · 可用伪标签 ${b.accepted_pseudo_label_count} · 伪标签错误 ${b.pseudo_label_error_count}
+                        </div>
+                    </div>
+                `).join('')
+            } catch (e) {
+                el('exportHistoryList').innerHTML = '<div class="list-item"><div class="list-item-title" style="color:var(--muted)">加载导出历史失败</div></div>'
+            }
+        }
+
         async function reloadDashboard(forceTasks = false) {
             await loadSummary()
             if (forceTasks) {
@@ -1202,6 +1239,7 @@
             } else {
                 await loadTasks()
             }
+            await loadExportHistory()
         }
 
         function bindEvents() {
