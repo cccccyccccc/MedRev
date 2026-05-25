@@ -4,6 +4,21 @@ import json
 from pathlib import Path
 from typing import Any, Dict, List, Tuple
 
+# Pinyin to Chinese category name mapping for display
+CATEGORY_PINYIN_REMAP = {
+    "shen cuo gou liu": "肾错构瘤",
+    "shen ji shui": "肾积水",
+    "shen jie shi": "肾结石",
+    "shen nang zhong": "肾囊肿",
+    "shen shi zhi mi man xing bing bian": "肾实质弥漫性病变",
+    "shen zang e xing zhong liu": "肾脏恶性肿瘤",
+}
+
+
+def _resolve_display_category(category_name: str) -> str:
+    """Map a category name to its Chinese display form if known."""
+    return CATEGORY_PINYIN_REMAP.get(category_name, category_name)
+
 
 def iou(boxA, boxB):
     xA = max(boxA[0], boxB[0])
@@ -239,23 +254,27 @@ def coco_to_maps(coco: Dict[str, Any], data_root: Path, is_prediction: bool) -> 
         anns = annotations_by_image.get(image.get("id"), [])
         boxes = []
         for anno in anns:
-            category = categories.get(anno.get("category_id"), str(anno.get("category_id")))
+            raw_category = categories.get(anno.get("category_id"), str(anno.get("category_id")))
+            # Prefer Chinese source_category_raw, then remap pinyin, then keep raw
+            source_raw = anno.get("source_category_raw", "")
             if is_prediction:
+                display_category = source_raw or _resolve_display_category(raw_category)
                 boxes.append({
-                    "category": category,
+                    "category": display_category,
                     "bbox": xywh_to_xyxy(anno.get("bbox")),
                     "confidence": anno.get("score", 0.0),
                     "category_id": anno.get("category_id"),
                     "model_class_id": anno.get("model_class_id"),
                 })
             else:
+                display_category = source_raw or _resolve_display_category(raw_category)
                 boxes.append({
-                    "category": category,
+                    "category": display_category,
                     "bbox": xywh_to_xyxy(anno.get("bbox")),
                     "confidence": 1.0,
                     "category_id": anno.get("category_id"),
                     "source_note": anno.get("source_note", ""),
-                    "source_category_raw": anno.get("source_category_raw", category),
+                    "source_category_raw": source_raw or raw_category,
                 })
         out[key] = {
             "image_name": image_name,
