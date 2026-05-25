@@ -522,14 +522,23 @@ def render_boxes_on_image(image_path: str, gt_boxes=None, pred_boxes=None):
         return None
     img = Image.open(p).convert('RGB')
     draw = ImageDraw.Draw(img)
-    # prefer a TrueType font for clearer rendering; fall back to default
-    try:
-        font = ImageFont.truetype("arial.ttf", size=18)
-    except Exception:
+    # prefer a Chinese-capable TrueType font; fall back to Latin fonts, then default
+    font = None
+    for font_name in (
+        "msyh.ttc",     # 微软雅黑
+        "simhei.ttf",   # 黑体
+        "Deng.ttf",     # 等线
+        "simsun.ttc",   # 宋体
+        "arial.ttf",
+        "DejaVuSans.ttf",
+    ):
         try:
-            font = ImageFont.truetype("DejaVuSans.ttf", size=18)
+            font = ImageFont.truetype(font_name, size=18)
+            break
         except Exception:
-            font = ImageFont.load_default()
+            continue
+    if font is None:
+        font = ImageFont.load_default()
 
     # draw GT in green
     for g in gt_boxes:
@@ -1218,7 +1227,15 @@ def admin_generate():
         return jsonify({'error': 'forbidden'}), 403
 
     payload = request.get_json(force=True) or {}
-    organ = payload.get('organ') or '鑲捐剰'
+    # Accept orgs (list) or organ (single string) for backward compatibility
+    organ_list = payload.get('organs')
+    if not organ_list:
+        single_organ = payload.get('organ') or '肾脏'
+        organ_list = [single_organ]
+    if not isinstance(organ_list, list) or not organ_list:
+        return jsonify({'error': 'organs must be a non-empty list'}), 400
+    organs_str = ','.join(organ_list)
+
     model_version = payload.get('model_version') or ''
     data_version = payload.get('data_version') or ''
     data_root = payload.get('data_root') or CONFIG.get('data_root') or 'Test'
@@ -1230,7 +1247,9 @@ def admin_generate():
     else:
         from datetime import datetime
         date = datetime.now().strftime('%Y%m%d')
-        parts = [organ.replace(' ', '_')]
+        parts = [organ_list[0].replace(' ', '_')]
+        if len(organ_list) > 1:
+            parts.append(f'等多器官')
         if model_version:
             parts.append(str(model_version))
         parts.append(date)
@@ -1238,13 +1257,14 @@ def admin_generate():
             parts.append(str(data_version))
         run_id = '_'.join([p for p in parts if p])
 
-    # call task generator script with run_id and organ
+    # call task generator script with run_id and organs
     script = ROOT / 'scripts' / 'generate_tasks.py'
     if not script.exists():
         return jsonify({'error': 'generate script not found'}), 404
 
+    # Prepare data for first organ (primary); the script will handle each organ independently
     try:
-        generation_data_root = prepare_data_root_for_generation(data_root, organ)
+        generation_data_root = prepare_data_root_for_generation(data_root, organ_list[0])
     except Exception as exc:
         return jsonify({'error': f'failed to prepare data_root: {exc}'}), 500
 
@@ -1253,8 +1273,8 @@ def admin_generate():
         str(script),
         '--run-id',
         run_id,
-        '--organ',
-        organ,
+        '--organs',
+        organs_str,
         '--data-root',
         str(generation_data_root),
         '--conf-threshold',
@@ -1340,7 +1360,7 @@ def logout():
 
 
 if __name__ == '__main__':
-    app.run(port=5001)
+    app.run(port=5000)
 
 
 
