@@ -865,6 +865,59 @@ def _echobox_api(method: str, path: str, body: dict | None = None) -> tuple:
 _echobox_image_cache: dict[str, int] = {}
 
 
+def _discover_labels() -> list[str]:
+    """Extract label names from MedRev data files."""
+    data_root = CONFIG.get('data_root', 'Test')
+    data_dir = ROOT / data_root
+
+    # Try GT.json first, then pred.json
+    for fname in ('GT.json', 'pred.json'):
+        fp = data_dir / fname
+        if not fp.exists():
+            continue
+        try:
+            data = json.loads(fp.read_text(encoding='utf-8'))
+            cats = data.get('categories', [])
+            if cats:
+                return [c['name'] for c in cats]
+        except Exception:
+            pass
+    return []
+
+
+def _echobox_setup_project() -> tuple:
+    """Create an echobox project for the current MedRev run. Idempotent."""
+    data_root = CONFIG.get('data_root', 'Test')
+    abs_root = str((ROOT / data_root).resolve())
+    labels = _discover_labels()
+
+    # 1. create project
+    code, proj = _echobox_api('POST', '/api/projects', {
+        'source_folder': abs_root,
+        'name': f'MedRev-{RUN_ID}',
+        'initial_labels': labels,
+        'train_val_test': [1.0, 0.0, 0.0],
+        'export_format': 'coco',
+    })
+    if code not in (200, 201) or not proj.get('id'):
+        return code, {'error': 'failed to create echobox project', 'detail': proj}
+
+    project_id = proj['id']
+
+    # 2. finalize (scans images)
+    code, _ = _echobox_api('POST', f'/api/projects/{project_id}/finalize')
+    if code not in (200, 201, 204):
+        return code, {'error': 'echobox finalize failed'}
+
+    # 3. persist
+    CONFIG['echobox_project_id'] = project_id
+    CONFIG['echobox_data_dir'] = abs_root
+    save_config(CONFIG)
+    _echobox_image_cache.clear()
+
+    return 200, {'project_id': project_id, 'data_dir': abs_root}
+
+
 @app.route('/task/<task_id>/echobox-mapping', methods=['GET'])
 def echobox_mapping(task_id):
     """Return {project_id, image_id} so the frontend can load the echobox iframe."""
@@ -874,7 +927,11 @@ def echobox_mapping(task_id):
 
     project_id = CONFIG.get('echobox_project_id')
     if not project_id:
-        return jsonify({'error': 'echobox project not set up yet'}), 503
+        # auto-setup on first use
+        code, result = _echobox_setup_project()
+        if code not in (200, 201):
+            return jsonify({'error': 'echobox project setup failed', 'detail': result}), 503
+        project_id = result['project_id']
 
     image_path = task.get('image_path', '')
     if not image_path:
@@ -885,7 +942,9 @@ def echobox_mapping(task_id):
         return jsonify({'project_id': project_id, 'image_id': _echobox_image_cache[cache_key]})
 
     norm = image_path.replace('\\', '/')
-    code, payload = _echobox_api('GET', f'/api/projects/{project_id}/lookup-by-path?abs_path={norm}')
+    import urllib.parse
+    encoded = urllib.parse.quote(norm, safe='')
+    code, payload = _echobox_api('GET', f'/api/projects/{project_id}/lookup-by-path?abs_path={encoded}')
     if code == 200 and payload.get('image_id'):
         _echobox_image_cache[cache_key] = payload['image_id']
         return jsonify({'project_id': project_id, 'image_id': payload['image_id']})
@@ -895,39 +954,14 @@ def echobox_mapping(task_id):
 
 @app.route('/admin/setup-echobox', methods=['POST'])
 def setup_echobox():
-    """Create an echobox project for the current MedRev run."""
+    """Create an echobox project for the current MedRev run (admin only)."""
     role = session.get('role')
     if role != 'admin':
         return jsonify({'error': 'admin required'}), 403
-
-    data_root = CONFIG.get('data_root', 'Test')
-    abs_root = str((ROOT / data_root).resolve())
-
-    # 1. create project
-    code, proj = _echobox_api('POST', '/api/projects', {
-        'source_folder': abs_root,
-        'name': f'MedRev-{RUN_ID}',
-        'initial_labels': [],
-        'train_val_test': [1.0, 0.0, 0.0],
-        'export_format': 'coco',
-    })
-    if code not in (200, 201) or not proj.get('id'):
-        return jsonify({'error': 'failed to create echobox project', 'detail': proj}), 500
-
-    project_id = proj['id']
-
-    # 2. finalize (scans images)
-    code, _ = _echobox_api('POST', f'/api/projects/{project_id}/finalize')
-    if code not in (200, 201, 204):
-        return jsonify({'error': 'echobox finalize failed'}), 500
-
-    # 3. persist
-    CONFIG['echobox_project_id'] = project_id
-    CONFIG['echobox_data_dir'] = abs_root
-    save_config(CONFIG)
-    _echobox_image_cache.clear()
-
-    return jsonify({'status': 'ok', 'project_id': project_id, 'data_dir': abs_root})
+    code, result = _echobox_setup_project()
+    if code not in (200, 201):
+        return jsonify(result), 500
+    return jsonify({'status': 'ok', **result})
 
 
 @app.route('/admin/echobox-status', methods=['GET'])
@@ -1484,7 +1518,76 @@ def logout():
 
 
 if __name__ == '__main__':
-    app.run(port=8080)
+    import atexit
+    import signal as _signal
+
+    ECHOBOX = ROOT / "echobox"
+    procs: list[subprocess.Popen] = []
+
+    def _stop_echobox():
+        for p in procs:
+            try:
+                if os.name == "nt":
+                    subprocess.run(
+                        ["taskkill", "/F", "/T", "/PID", str(p.pid)],
+                        capture_output=True,
+                    )
+                else:
+                    p.terminate()
+            except Exception:
+                pass
+        for p in procs:
+            try:
+                p.wait(timeout=5)
+            except Exception:
+                pass
+
+    def _on_sig(signum, frame):
+        print("\nShutting down all services...")
+        _stop_echobox()
+        sys.exit(0)
+
+    _signal.signal(_signal.SIGINT, _on_sig)
+    _signal.signal(_signal.SIGTERM, _on_sig)
+    atexit.register(_stop_echobox)
+
+    env = os.environ.copy()
+
+    # 1. echobox FastAPI (port 8000)
+    print("[echobox] Starting API (port 8000)...")
+    uv_cmd = "uv.exe" if sys.platform == "win32" else "uv"
+    api_proc = subprocess.Popen(
+        [uv_cmd, "run", "--package", "echobox-app",
+         "uvicorn", "echobox_app.main:create_app",
+         "--factory", "--host", "127.0.0.1", "--port", "8000"],
+        cwd=str(ECHOBOX), env=env,
+        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+    )
+    procs.append(api_proc)
+
+    # 2. echobox Vite dev server (port 5173)
+    print("[echobox] Starting frontend (port 5173)...")
+    npm = "npm.cmd" if sys.platform == "win32" else "npm"
+    web_proc = subprocess.Popen(
+        [npm, "--prefix", str(ECHOBOX / "frontend"), "run", "dev"],
+        cwd=str(ECHOBOX), env=env,
+        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+    )
+    procs.append(web_proc)
+
+    import time
+    time.sleep(2)
+
+    print("\nServices:")
+    print("  MedRev:         http://127.0.0.1:8080")
+    print("  echobox API:    http://127.0.0.1:8000")
+    print("  echobox UI:     http://127.0.0.1:5173")
+    print()
+
+    try:
+        app.run(port=8080)
+    finally:
+        _stop_echobox()
 
 
 
