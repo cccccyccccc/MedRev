@@ -6,6 +6,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>MedRev - 医生审核</title>
     <link href="/static/style.css" rel="stylesheet">
+    <script src="/static/annotator.js"></script>
 </head>
 
 <body>
@@ -114,15 +115,19 @@
                             <div class="section-label">手动标注</div>
                             <h3>修正伪标签</h3>
                         </div>
-                        <span id="annotationStatus" style="font-size:12px;color:var(--muted)"></span>
+                        <div class="annotator-toolbar" id="annotatorToolbar">
+                            <div class="toolbar-group">
+                                <button class="tool-btn active" data-mode="select" title="选择/移动 (V)">⊹ 选择</button>
+                                <button class="tool-btn" data-mode="draw" title="画框 (E)">✚ 画框</button>
+                            </div>
+                            <span class="toolbar-sep"></span>
+                            <div class="toolbar-group" id="labelBtns">
+                            </div>
+                            <span class="toolbar-sep"></span>
+                            <button class="tool-btn danger" id="deleteBoxBtn" title="删除选中框 (Del)">✕ 删除</button>
+                        </div>
                     </div>
-                    <div class="annotation-frame">
-                        <iframe id="echoboxIframe"
-                                src=""
-                                style="width:100%;height:100%;border:none;"
-                                allow="clipboard-write"
-                                sandbox="allow-scripts allow-same-origin allow-forms">
-                        </iframe>
+                    <div class="annotation-canvas-wrap" id="annotationCanvasWrap">
                     </div>
                 </article>
 
@@ -217,6 +222,9 @@
                                 </select>
                             </div>
                             <button class="btn danger" id="pseudoError">提交错误</button>
+                            <span class="action-separator" aria-hidden="true"></span>
+                            <button class="btn" id="saveAnnotationsBtn">保存标注结果</button>
+                            <span id="saveAnnotationStatus" class="save-status"></span>
                         </div>
                     </div>
                 </section>
@@ -258,8 +266,11 @@
         const pseudoActions = document.getElementById('pseudoActions')
         const reviewNotice = document.getElementById('reviewNotice')
         const annotationCard = document.getElementById('annotationCard')
-        const echoboxIframe = document.getElementById('echoboxIframe')
-        const annotationStatus = document.getElementById('annotationStatus')
+        const annotationCanvasWrap = document.getElementById('annotationCanvasWrap')
+        const labelBtns = document.getElementById('labelBtns')
+        const deleteBoxBtn = document.getElementById('deleteBoxBtn')
+        const annotatorToolbar = document.getElementById('annotatorToolbar')
+        let annotator = null
         const reportControls = document.getElementById('reportControls')
         const reportPrev = document.getElementById('reportPrev')
         const reportNext = document.getElementById('reportNext')
@@ -275,6 +286,8 @@
         const closePreview = document.getElementById('closePreview')
         const toast = document.getElementById('toast')
         const toastText = document.getElementById('toastText')
+        const saveAnnotationsBtn = document.getElementById('saveAnnotationsBtn')
+        const saveAnnotationStatus = document.getElementById('saveAnnotationStatus')
         let currentTask = null
         let reportIndex = 0
         let currentReportImages = []
@@ -613,7 +626,7 @@
 
             renderRelatedImages(currentTask)
             if (type === 'pseudo') {
-                loadAnnotationIframe(currentTask)
+                initAnnotator(currentTask)
             }
             taskDirectory.querySelectorAll('.task-directory-item').forEach((button) => {
                 button.classList.toggle('active', button.dataset.taskId === currentTask.task_id)
@@ -776,39 +789,118 @@
             })
         }
 
-        async function loadAnnotationIframe(task) {
-            if (!task || !task.task_id) return
-            try {
-                const res = await fetch(`/task/${encodeURIComponent(task.task_id)}/echobox-mapping`)
-                const mapping = await res.json()
-                if (!mapping.project_id || !mapping.image_id) {
-                    annotationStatus.textContent = '标注服务未就绪'
-                    return
-                }
-                const iframeSrc = `http://127.0.0.1:5173/annotate?project_id=${mapping.project_id}&embed=1&image_id=${mapping.image_id}`
-                if (echoboxIframe.src !== iframeSrc) {
-                    echoboxIframe.src = iframeSrc
-                }
-                annotationStatus.textContent = `项目 #${mapping.project_id} · 图片 #${mapping.image_id}`
-            } catch (e) {
-                annotationStatus.textContent = '标注服务连接失败'
+        function initAnnotator(task) {
+            if (!task || !task.image_path) return
+            // destroy previous
+            if (annotator) { annotator.destroy(); annotator = null; }
+            annotationCanvasWrap.innerHTML = ''
+
+            annotator = new Annotator(annotationCanvasWrap, {
+                onChange: () => {},
+                onSelection: (a) => {
+                    deleteBoxBtn.disabled = a == null
+                },
+            })
+
+            const imgSrc = assetUrl(task.task_id, 'current')
+            annotator.loadImage(imgSrc, task.image_width || 0, task.image_height || 0)
+
+            const predKey = 'pseudo_label_prediction'
+            const preds = task[predKey] || []
+            if (preds.length > 0) {
+                annotator.loadAnnotations(preds.map((p) => ({
+                    bbox: p.bbox,
+                    category: p.category,
+                    category_id: p.category_id,
+                    source: 'pseudo_label',
+                    confidence: p.confidence,
+                })))
             }
         }
 
-        function collectAnnotations() {
-            return new Promise((resolve) => {
-                if (!echoboxIframe.contentWindow) return resolve([])
-                const timeout = setTimeout(() => resolve([]), 3000)
-                const handler = (event) => {
-                    if (event.data && event.data.type === 'ANNOTATION_DATA') {
-                        clearTimeout(timeout)
-                        window.removeEventListener('message', handler)
-                        resolve(event.data.payload || [])
+        function setupLabelButtons() {
+            labelBtns.innerHTML = ''
+            Annotator.CATEGORIES.forEach((cat) => {
+                const btn = document.createElement('button')
+                btn.className = 'label-btn'
+                btn.dataset.catId = cat.id
+                btn.style.cssText = `--label-color:${cat.color}`
+                btn.textContent = cat.name
+                btn.addEventListener('click', () => {
+                    labelBtns.querySelectorAll('.label-btn').forEach((b) => b.classList.remove('active'))
+                    btn.classList.add('active')
+                    if (annotator) {
+                        annotator.setActiveLabel(cat.id)
+                        const sel = annotator.annotations.find((a) => a.id === annotator.selectedId)
+                        if (sel) {
+                            annotator.changeSelectedLabel(cat.id)
+                            labelBtns.querySelectorAll('.label-btn').forEach((b) => {
+                                if (parseInt(b.dataset.catId) === sel.category_id) b.classList.add('active')
+                            })
+                        }
                     }
-                }
-                window.addEventListener('message', handler)
-                echoboxIframe.contentWindow.postMessage({ type: 'GET_ANNOTATIONS', payload: {} }, '*')
+                })
+                labelBtns.appendChild(btn)
             })
+            // activate first
+            const first = labelBtns.querySelector('.label-btn')
+            if (first) first.classList.add('active')
+        }
+
+        // toolbar mode buttons
+        annotatorToolbar.querySelectorAll('[data-mode]').forEach((btn) => {
+            btn.addEventListener('click', () => {
+                annotatorToolbar.querySelectorAll('[data-mode]').forEach((b) => b.classList.remove('active'))
+                btn.classList.add('active')
+                if (annotator) annotator.setMode(btn.dataset.mode)
+            })
+        })
+
+        deleteBoxBtn.addEventListener('click', () => {
+            if (annotator) annotator.deleteSelected()
+        })
+
+        setupLabelButtons()
+
+        async function saveAnnotationsToDir() {
+            if (!currentTask || !annotator) return
+            const annotations = annotator.getAnnotations()
+            if (annotations.length === 0) {
+                saveAnnotationStatus.textContent = '暂无标注数据可保存'
+                saveAnnotationStatus.className = 'save-status error'
+                return
+            }
+            saveAnnotationsBtn.disabled = true
+            saveAnnotationStatus.textContent = '保存中...'
+            saveAnnotationStatus.className = 'save-status'
+            try {
+                const imageName = currentTask.image_name || currentTask.task_id
+                const cocoData = annotator.getCocoJson(imageName)
+                const payload = {
+                    task_id: currentTask.task_id,
+                    image_name: imageName,
+                    coco_data: cocoData,
+                    reviewer_id: reviewerId,
+                }
+                const r = await fetch('/save-annotations', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(payload)
+                })
+                const data = await r.json()
+                if (r.ok) {
+                    saveAnnotationStatus.textContent = `已保存至: ${data.saved_path || '完成'}`
+                    saveAnnotationStatus.className = 'save-status success'
+                } else {
+                    saveAnnotationStatus.textContent = data.error || '保存失败'
+                    saveAnnotationStatus.className = 'save-status error'
+                }
+            } catch (error) {
+                saveAnnotationStatus.textContent = `保存失败: ${error.message}`
+                saveAnnotationStatus.className = 'save-status error'
+            } finally {
+                saveAnnotationsBtn.disabled = false
+            }
         }
 
         async function submitReview(result, errorType = null) {
@@ -826,9 +918,9 @@
                 submitted_at: new Date().toISOString()
             }
 
-            // collect echobox annotations for pseudo_label_error
-            if (result === 'pseudo_label_error') {
-                const annotations = await collectAnnotations()
+            // collect annotator annotations for pseudo_label_error
+            if (result === 'pseudo_label_error' && annotator) {
+                const annotations = annotator.getAnnotations()
                 if (annotations.length > 0) {
                     payload.annotations = annotations
                 }
@@ -861,6 +953,7 @@
             const et = document.getElementById('errorType').value
             submitReview('pseudo_label_error', et)
         })
+        saveAnnotationsBtn.addEventListener('click', saveAnnotationsToDir)
 
         loadNext(taskTypeSelect.value)
     </script>
